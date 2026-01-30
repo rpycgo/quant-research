@@ -8,11 +8,12 @@ logger = logging.getLogger(__name__)
 
 
 class TimescaleIngestor:
-    def __init__(self, db_config):
+    def __init__(self, db_config, candle_config=None):
         """
         Initialize TimescaleDB connection using config dictionary.
         """
         self.db_config = db_config
+        self.candle_config = candle_config or []
         self._init_db()
 
     def _get_connection(self):
@@ -29,22 +30,57 @@ class TimescaleIngestor:
         """
         Create table and convert it to a TimescaleDB hypertable.
         """
-        create_table_query = """
-        CREATE TABLE IF NOT EXISTS futures_ticks (
-            time TIMESTAMPTZ NOT NULL,
-            symbol TEXT NOT NULL,
-            price DOUBLE PRECISION NOT NULL
-        );
-        """
-        # TimescaleDB hypertable command (time is the partitioning column)
-        hypertable_query = "SELECT create_hypertable('futures_ticks', 'time', if_not_exists => TRUE);"
-
         with self._get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(create_table_query)
-                cursor.execute(hypertable_query)
+                # 1. Initialize base table and convert to hypertable
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS futures_ticks (
+                        time TIMESTAMPTZ NOT NULL,
+                        symbol TEXT NOT NULL,
+                        price DOUBLE PRECISION NOT NULL
+                    );
+                """)
+                cursor.execute("SELECT create_hypertable('futures_ticks', 'time', if_not_exists => TRUE);")
+
+                # 2. Create continuous aggregates dynamically from config
+                for cfg in self.candle_config:
+                    query = self._build_candle_query(cfg)
+                    cursor.execute(query)
+
                 conn.commit()
-                logger.info("TimescaleDB Hypertable initialized.")
+                logger.info(f"Initialized {len(self.candle_config)} candle views from config.")
+
+    def _build_candle_query(self, cfg):
+        """
+        Build SQL query dynamically. 
+        Handles the column name difference: 'time' for raw ticks vs 'bucket' for existing views.
+        """
+        if cfg['source'] == "futures_ticks":
+            # Direct aggregation from raw tick data
+            # Use 'time' as the ordering column
+            return f"""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {cfg['name']} 
+            WITH (timescaledb.continuous = true) AS
+            SELECT time_bucket('{cfg['interval']}', time) AS bucket, symbol,
+                   first(price, time) as open, 
+                   max(price) as high, 
+                   min(price) as low, 
+                   last(price, time) as close
+            FROM futures_ticks GROUP BY bucket, symbol;
+            """
+        else:
+            # Hierarchical aggregation from an existing materialized view
+            # Use 'bucket' as the ordering column since it's the time column in the source view
+            return f"""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS {cfg['name']} 
+            WITH (timescaledb.continuous = true) AS
+            SELECT time_bucket('{cfg['interval']}', bucket) AS bucket, symbol,
+                   first(open, bucket) as open, 
+                   max(high) as high, 
+                   min(low) as low, 
+                   last(close, bucket) as close
+            FROM {cfg['source']} GROUP BY bucket, symbol;
+            """
 
     def save_batch(self, data_batch):
         """

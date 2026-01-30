@@ -11,3 +11,11 @@ database:
   dbname: "postgres"
   user: "postgres"
   password: "1234"
+
+candle_views:
+  - { name: "candle_1min", interval: "1 minute", source: "futures_ticks" }
+  - { name: "candle_5min", interval: "5 minutes", source: "candle_1min" }
+  - { name: "candle_15min", interval: "15 minutes", source: "candle_1min" }
+  - { name: "candle_1hour", interval: "1 hour", source: "candle_1min" }
+  - { name: "candle_4hour", interval: "4 hours", source: "candle_1hour" }
+  - { name: "candle_1day", interval: "1 day", source: "candle_1hour" }

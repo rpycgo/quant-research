@@ -23,3 +23,6 @@ class ConfigManager:
 
     def get_db_config(self):
         return self._config.get('database', {})
+
+    def get_candle_view_config(self):
+        return self._config.get('candle_views', {})

@@ -26,9 +26,10 @@ class CryptoPipeline:
 
         pipeline_cfg = self.config_manager.get_pipeline_config()
         db_cfg = self.config_manager.get_db_config()
+        candle_view_cfg = self.config_manager.get_candle_view_config()
 
         # 2. Initialize Ingestor (TimescaleDB) and Worker (WebSocket)
-        self.ingestor = TimescaleIngestor(db_cfg)
+        self.ingestor = TimescaleIngestor(db_cfg, candle_view_cfg)
         self.collector = BinanceCollector(self.symbols)
 
         self.batch_size = pipeline_cfg.get('batch_size', 20)
@@ -63,6 +64,7 @@ class CryptoPipeline:
             await self.collector.start()
         except Exception as e:
             logger.error(f"Pipeline crashed: {e}")
+
 
 if __name__ == "__main__":
     # Initialize the main pipeline

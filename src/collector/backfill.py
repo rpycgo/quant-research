@@ -101,7 +101,7 @@ class BackfillService:
                         time, 
                         LEAD(time) OVER (ORDER BY time) AS next_time,
                         EXTRACT(EPOCH FROM (LEAD(time) OVER (ORDER BY time) - time)) AS gap_seconds
-                    FROM futures_ticks
+                    FROM future_ticks
                     WHERE symbol = %s 
                       AND time > NOW() - INTERVAL '%s hours'
                 ) AS sub

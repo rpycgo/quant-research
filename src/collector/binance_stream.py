@@ -19,7 +19,7 @@ class BinanceCollector:
         Connect to Binance WebSocket and stream data.
         """
         # Combine streams: btcusdt@ticker/ethusdt@ticker
-        stream_names = [f"{s}@ticker" for s in self.symbols]
+        stream_names = [f"{symbol}@aggTrade" for symbol in self.symbols]
         stream_url = f"{self.base_url}/{'/'.join(stream_names)}"
 
         self.running = True
@@ -32,12 +32,13 @@ class BinanceCollector:
                     data = json.loads(message)
 
                     # Parse data needed for simple tick
-                    # e: event type, s: symbol, p: price, E: event time
-                    if 'e' in data and data['e'] == '24hrTicker':
+                    # e: event type, s: symbol, p: price, T: event time, q: volume
+                    if 'e' in data and data['e'] == 'aggTrade':
                         parsed_tick = {
                             'symbol': data['s'],
-                            'price': float(data['c']), # 'c' is last price in ticker stream
-                            'event_time': data['E']
+                            'price': float(data['p']),
+                            'volume': float(data['q']),
+                            'event_time': data['T'],
                         }
 
                         if self.handle_data:

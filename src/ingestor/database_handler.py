@@ -30,7 +30,10 @@ class TimescaleIngestor:
         """
         Create table and convert it to a TimescaleDB hypertable.
         """
-        with self._get_connection() as conn:
+        conn = self._get_connection()
+        conn.autocommit = True
+
+        try:
             with conn.cursor() as cursor:
                 # 1. Initialize base table and convert to hypertable
                 cursor.execute("""
@@ -47,8 +50,14 @@ class TimescaleIngestor:
                     query = self._build_candle_query(cfg)
                     cursor.execute(query)
 
-                conn.commit()
                 logger.info(f"Initialized {len(self.candle_config)} candle views from config.")
+
+        except Exception as e:
+            logger.error(f"DB Initialization Error: {e}")
+            raise
+
+        finally:
+            conn.close()
 
     def _build_candle_query(self, cfg):
         """
@@ -66,7 +75,8 @@ class TimescaleIngestor:
                    max(price) as high, 
                    min(price) as low, 
                    last(price, time) as close
-            FROM futures_ticks GROUP BY bucket, symbol;
+            FROM futures_ticks 
+            GROUP BY time_bucket('{cfg['interval']}', time), symbol;
             """
         else:
             # Hierarchical aggregation from an existing materialized view
@@ -79,7 +89,8 @@ class TimescaleIngestor:
                    max(high) as high, 
                    min(low) as low, 
                    last(close, bucket) as close
-            FROM {cfg['source']} GROUP BY bucket, symbol;
+            FROM {cfg['source']} 
+            GROUP BY time_bucket('{cfg['interval']}', bucket), symbol;
             """
 
     def save_batch(self, data_batch):

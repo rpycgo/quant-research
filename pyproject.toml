@@ -1,0 +1,22 @@
+[project]
+name = "quant-research"
+version = "0.1.0"
+package-mode = false
+description = ""
+authors = [
+    {name = "rpycgo",email = "skyd0608@gmail.com"}
+]
+readme = "README.md"
+requires-python = "^3.10"
+dependencies = [
+    "python-binance (>=1.0.34,<2.0.0)",
+    "python-dotenv (>=1.2.1,<2.0.0)",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "psycopg2-binary (>=2.9.11,<3.0.0)",
+    "aiokafka (>=0.13.0,<0.14.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

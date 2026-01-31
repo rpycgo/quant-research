@@ -12,6 +12,11 @@ database:
   user: "postgres"
   password: "1234"
 
+kafka:
+  bootstrap_servers: "localhost:9092"
+  topic: "crypto.futures.ticks"
+  batch_size: 50
+
 candle_views:
   - { name: "candle_1min", interval: "1 minute", source: "futures_ticks" }
   - { name: "candle_5min", interval: "5 minutes", source: "candle_1min" }

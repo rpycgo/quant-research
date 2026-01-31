@@ -18,7 +18,7 @@ kafka:
   batch_size: 50
 
 candle_views:
-  - { name: "candle_1min", interval: "1 minute", source: "futures_ticks" }
+  - { name: "candle_1min", interval: "1 minute", source: "future_ticks" }
   - { name: "candle_5min", interval: "5 minutes", source: "candle_1min" }
   - { name: "candle_15min", interval: "15 minutes", source: "candle_1min" }
   - { name: "candle_1hour", interval: "1 hour", source: "candle_1min" }

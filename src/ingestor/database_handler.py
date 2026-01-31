@@ -37,13 +37,14 @@ class TimescaleIngestor:
             with conn.cursor() as cursor:
                 # 1. Initialize base table and convert to hypertable
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS futures_ticks (
+                    CREATE TABLE IF NOT EXISTS future_ticks (
                         time TIMESTAMPTZ NOT NULL,
                         symbol TEXT NOT NULL,
-                        price DOUBLE PRECISION NOT NULL
+                        price DOUBLE PRECISION NOT NULL,
+                        volume DOUBLE PRECISION NOT NULL
                     );
                 """)
-                cursor.execute("SELECT create_hypertable('futures_ticks', 'time', if_not_exists => TRUE);")
+                cursor.execute("SELECT create_hypertable('future_ticks', 'time', if_not_exists => TRUE);")
 
                 # 2. Create continuous aggregates dynamically from config
                 for cfg in self.candle_config:
@@ -64,7 +65,7 @@ class TimescaleIngestor:
         Build SQL query dynamically. 
         Handles the column name difference: 'time' for raw ticks vs 'bucket' for existing views.
         """
-        if cfg['source'] == "futures_ticks":
+        if cfg['source'] == "future_ticks":
             # Direct aggregation from raw tick data
             # Use 'time' as the ordering column
             return f"""
@@ -74,8 +75,9 @@ class TimescaleIngestor:
                    first(price, time) as open, 
                    max(price) as high, 
                    min(price) as low, 
-                   last(price, time) as close
-            FROM futures_ticks 
+                   last(price, time) as close,
+                   SUM(volume) as volume
+            FROM future_ticks 
             GROUP BY time_bucket('{cfg['interval']}', time), symbol;
             """
         else:
@@ -88,7 +90,8 @@ class TimescaleIngestor:
                    first(open, bucket) as open, 
                    max(high) as high, 
                    min(low) as low, 
-                   last(close, bucket) as close
+                   last(close, bucket) as close,
+                   SUM(volume) as volume
             FROM {cfg['source']} 
             GROUP BY time_bucket('{cfg['interval']}', bucket), symbol;
             """
@@ -102,14 +105,14 @@ class TimescaleIngestor:
         if not data_batch:
             return
 
-        query = "INSERT INTO futures_ticks (time, symbol, price) VALUES %s"
+        query = "INSERT INTO future_ticks (time, symbol, price, volume) VALUES %s"
 
         values = []
         for data in data_batch:
             # Convert millisecond timestamp to Python datetime object
             # Binance event_time is in ms (e.g., 1769799311651)
             dt_object = datetime.fromtimestamp(data['event_time'] / 1000.0, tz=timezone.utc)
-            values.append((dt_object, data['symbol'], data['price']))
+            values.append((dt_object, data['symbol'], data['price'], data['volume']))
 
         try:
             with self._get_connection() as conn:

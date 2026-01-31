@@ -26,3 +26,6 @@ class ConfigManager:
 
     def get_candle_view_config(self):
         return self._config.get('candle_views', {})
+
+    def get_kafka_config(self):
+        return self._config.get('kafka', {})

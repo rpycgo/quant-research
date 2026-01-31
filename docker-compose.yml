@@ -53,9 +53,25 @@ services:
     networks:
       - quant-net
 
+  grafana:
+      image: grafana/grafana-oss:latest
+      container_name: grafana
+      ports:
+        - "3000:3000"
+      environment:
+        - GF_SECURITY_ADMIN_PASSWORD=admin
+      networks:
+        - quant-net
+      depends_on:
+        - timescaledb
+      restart: always
+      volumes:
+        - grafana_data:/var/lib/grafana
+
 volumes:
   timescaledb_data:
   kafka_data:
+  grafana_data:
 
 networks:
   quant-net:

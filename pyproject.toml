@@ -13,7 +13,8 @@ dependencies = [
     "python-dotenv (>=1.2.1,<2.0.0)",
     "pyyaml (>=6.0.3,<7.0.0)",
     "psycopg2-binary (>=2.9.11,<3.0.0)",
-    "aiokafka (>=0.13.0,<0.14.0)"
+    "aiokafka (>=0.13.0,<0.14.0)",
+    "aiohttp (>=3.13.3,<4.0.0)"
 ]
 
 

@@ -25,26 +25,37 @@ class BinanceCollector:
         self.running = True
         logger.info(f"Connected to streams: {stream_names}")
 
-        async with connect(stream_url) as websocket:
-            while self.running:
-                try:
-                    message = await websocket.recv()
-                    data = json.loads(message)
+        while self.running:
+            try:
+                async with connect(
+                    stream_url,
+                    ping_interval=20,
+                    ping_timeout=10,
+                    ) as websocket:
+                    logger.info("✅ WebSocket Connection established.")
 
-                    # Parse data needed for simple tick
-                    # e: event type, s: symbol, p: price, T: event time, q: volume
-                    if 'e' in data and data['e'] == 'aggTrade':
-                        parsed_tick = {
-                            'symbol': data['s'],
-                            'price': float(data['p']),
-                            'volume': float(data['q']),
-                            'event_time': data['T'],
-                        }
+                    while self.running:
+                        message = await websocket.recv()
+                        data = json.loads(message)
 
-                        if self.handle_data:
-                            # Callback function is async, so we MUST await it!
-                            await self.handle_data(parsed_tick)
+                        # Parse data needed for simple tick
+                        # e: event type, s: symbol, p: price, T: event time, q: volume
+                        if 'e' in data and data['e'] == 'aggTrade':
+                            parsed_tick = {
+                                'symbol': data['s'],
+                                'price': float(data['p']),
+                                'volume': float(data['q']),
+                                'event_time': data['T'],
+                            }
 
-                except Exception as e:
-                    logger.error(f"WebSocket Error: {e}")
-                    await asyncio.sleep(1) # Prevent tight loop on error
+                            if self.handle_data:
+                                # Callback function is async, so we MUST await it!
+                                await self.handle_data(parsed_tick)
+
+            except Exception as e:
+                logger.error(f"WebSocket Error: {e}. Retrying in 5s...")
+
+                if not self.running:
+                    break
+
+                await asyncio.sleep(5) # Prevent tight loop on error

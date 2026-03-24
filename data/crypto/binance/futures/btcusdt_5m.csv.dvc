@@ -1,0 +1,5 @@
+outs:
+- md5: c82934b310244b280480443776667f9e
+  size: 40195243
+  hash: md5
+  path: btcusdt_5m.csv

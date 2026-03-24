@@ -1,0 +1,5 @@
+outs:
+- md5: 7d13b5f1f7783e00300504d23781cba3
+  size: 39299267
+  hash: md5
+  path: ethusdt_5m.csv

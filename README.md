@@ -66,6 +66,9 @@ python run_collector.py
 
 # Terminal 2 — ingestor (Kafka → TimescaleDB)
 python run_ingestor.py
+
+# Gap repair (run separately as needed)
+python run_backfill.py
 ```
 
 ### Backtesting

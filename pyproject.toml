@@ -22,5 +22,11 @@ dependencies = [
     "aiohttp (>=3.13.3,<4.0.0)",
     "dvc>=3.67.0",
     "dvc-gdrive>=3.0.1",
+    "ccxt>=4.5.45",
+    "joblib>=1.5.3",
+    "mdrs-sde",
 ]
 package = false
+
+[tool.uv.sources]
+mdrs-sde = { git = "https://github.com/rpycgo-research/mdrs-sde.git" }

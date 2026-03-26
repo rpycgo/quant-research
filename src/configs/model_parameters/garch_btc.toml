@@ -1,0 +1,25 @@
+# configs/model_parameters/garch_btc.toml
+#
+# Local override for the GARCH(1,1) benchmark model on BTCUSDT futures.
+#
+# Keys not listed here fall back to garch_model/configs/default_config.toml.
+# The GARCH model package exposes sensible cross-asset defaults; only BTC-
+# specific tuning lives here.
+
+[garch_settings]
+p    = 1          # GARCH lag order (default: 1)
+q    = 1          # ARCH lag order  (default: 1)
+dist = "normal"   # error distribution: "normal" | "t" | "skewt"
+
+# Regime-signal parameters — fixed constants used to map GARCH volatility
+# forecasts onto the same sigmoid regime-probability as the SDE model.
+# These were calibrated against BTC 2024 walk-forward windows.
+# Remove or adjust for other symbols.
+[regime_signal]
+k_avg     = 0.45   # sigmoid slope (replaces hard-coded garch.py value)
+gamma_avg = 2.70   # sigmoid threshold
+
+[execution_costs]
+# Override if BTC futures commissions differ from the shared backtest default.
+# commission_rate = 0.0005
+# slippage_rate   = 0.001

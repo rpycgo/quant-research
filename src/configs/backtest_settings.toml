@@ -1,0 +1,51 @@
+# configs/backtest_settings.toml
+#
+# Shared execution and risk settings used by ALL model + asset combinations.
+#
+# These values are model-agnostic.  Model-specific overrides (e.g. different
+# TP ratios for a particular strategy) belong in the model's entry under
+# configs/model_parameters/.
+
+[filters]
+use_sticky          = true
+use_adx             = true
+only_selected_zone  = false
+
+[execution_costs]
+commission_rate = 0.0005   # 0.05 % per leg
+slippage_rate   = 0.001    # 0.10 % per leg
+
+[walk_forward_settings]
+training_months = 3
+testing_months  = 1
+parallel_jobs   = 10
+start_date      = "2024-01-01"
+end_date        = "2026-01-31"
+
+[trading_parameters]
+tp_long                  = 0.06
+sl_long                  = 0.04
+tp_short                 = 0.06
+sl_short                 = 0.04
+trailing_stop_start_ratio = 0.03
+max_hold_hours           = 48
+adx_threshold            = 30
+
+[risk_management]
+reference_sigma_1              = 14.665
+minimum_signal_duration        = 5
+break_even_trigger_ratio_long  = 0.7
+break_even_trigger_ratio_short = 0.3
+entry_probability_threshold    = 0.5
+
+[parameter_scaling]
+snr_divisor                  = 2.0
+sl_short_numerator           = 1.2
+min_hold_hours               = 18.0
+short_trailing_multiplier    = 0.8
+adx_boost_threshold_multiplier = 1.2
+max_hold_boost_ratio         = 1.5
+tp_long_clip                 = [0.85, 1.4]
+sl_long_clip                 = [0.75, 1.0]
+tp_short_clip                = [0.6,  1.3]
+sl_short_clip                = [0.5,  0.9]

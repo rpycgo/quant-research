@@ -10,17 +10,7 @@ from dotenv import load_dotenv
 from src.utils.config_loader import ConfigManager
 from src.ingestor.database_handler import TimescaleIngestor
 
-
-# ---------------------------------------------------------
-# PATH SETUP
-# ---------------------------------------------------------
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(current_dir, "../../"))
-
-if project_root not in sys.path:
-    sys.path.append(project_root)
-
-load_dotenv(os.path.join(project_root, ".env"))
+load_dotenv()
 
 # Setup Logging
 logging.basicConfig(
@@ -61,9 +51,7 @@ class BackfillService:
         """
         Initialize the BackfillService with Source IP configuration.
         """
-        abs_config_path = os.path.join(project_root, "src", "config", "settings.yaml")
-
-        self.config_manager = ConfigManager(config_path=abs_config_path)
+        self.config_manager = ConfigManager()
         self.symbols = self.config_manager.get_symbols()
         self.db_cfg = self.config_manager.get_db_config()
         self.candle_view_cfg = self.config_manager.get_candle_view_config()

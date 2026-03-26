@@ -38,7 +38,7 @@ Binance Futures WebSocket (aggTrade)
 
 ### `backfill.py` — `BackfillService`
 
-- Standalone gap-repair service
+- Standalone gap-repair service (entry-point: `run_backfill.py` at project root)
 - Queries TimescaleDB for time gaps in the last N hours
 - Fetches missing trades via Binance REST API and ingests directly to DB
 - Supports source IP binding for network interface control
@@ -74,8 +74,8 @@ SOURCE_IP=  # optional — bind outgoing requests to a specific network interfac
 # Real-time collection
 python run_collector.py
 
-# Manual gap repair (run separately as needed)
-python -m src.collector.backfill
+# Manual gap repair
+python run_backfill.py
 ```
 
 ---

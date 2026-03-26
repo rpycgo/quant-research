@@ -1,9 +1,13 @@
 import os
+import pathlib
 import yaml
 
 
 class ConfigManager:
-    def __init__(self, config_path="src/config/settings.yaml"):
+    def __init__(self, config_path: str | None = None):
+        if config_path is None:
+            project_root = pathlib.Path(__file__).resolve().parent.parent
+            config_path = project_root / "configs" / "pipeline_settings.yaml"
         self.config_path = config_path
         self._config = self._load_config()
 

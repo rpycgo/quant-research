@@ -23,5 +23,6 @@ dependencies = [
     "dvc>=3.67.0",
     "dvc-gdrive>=3.0.1",
     "ccxt>=4.5.45",
+    "joblib>=1.5.3",
 ]
 package = false

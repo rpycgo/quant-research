@@ -16,7 +16,7 @@ Typical usage::
     from backtesting.core.config_loader import BacktestConfigLoader
 
     loader = BacktestConfigLoader()
-    model  = ModelRegistry.get("hybrid_sde_btc")
+    model  = ModelRegistry.get("mdrs_sde_btc")
     runner = WalkForwardRunner(model=model, symbol="BTCUSDT", config_loader=loader)
     result = runner.run()
 """

@@ -1823,7 +1823,7 @@ wheels = [
 [[package]]
 name = "mdrs-sde"
 version = "0.1.0"
-source = { git = "https://github.com/rpycgo-research/mdrs-sde.git#6e12a428bccb36249cb4a860a13a00789909d034" }
+source = { git = "https://github.com/rpycgo-research/mdrs-sde.git#47fd40c644c9431e631c8947b42a650ac40f0ce7" }
 dependencies = [
     { name = "arch" },
     { name = "arviz" },

@@ -1,0 +1,28 @@
+# configs/model_parameters/mdrs_sde_btc.toml
+#
+# Local override for the MDRS SDE model on BTCUSDT futures.
+#
+# PURPOSE
+# -------
+# List ONLY the values that deviate from the package default shipped with
+# the mdrs-sde-btc package (mdrs_sde/configs/default_config.toml).
+# All keys absent here fall back to the package default automatically.
+#
+# This file is experiment-specific: commit it alongside the code change
+# that motivated the adjustment so `git diff` shows exactly what changed
+# and why.  Do NOT copy-paste the entire default here.
+#
+# USAGE
+# -----
+# Loaded via BacktestConfigLoader.get_model_config("mdrs_sde_btc").
+
+# Example: tighten the regime-transition threshold for BTC's higher
+# volatility profile compared to the generic default (gamma_mu = 3.0).
+[sde_priors]
+gamma_mu    = 3.0   # tighter breakout threshold for BTC (default: 3.0)
+gamma_lower = 1.5   # keep consistent with tighter mu
+
+# Example: increase MCMC draws for production runs; reduce for fast
+# experimentation by temporarily overriding via CLI or a separate file.
+[mcmc_settings]
+draws = 2000        # default: 2000 — raise to 3000 for final production run

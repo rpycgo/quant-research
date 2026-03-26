@@ -1,0 +1,5 @@
+outs:
+- md5: 529bcee7a5307d1d89876c2ec435078b
+  size: 91942
+  hash: md5
+  path: events_sol_5m.toml

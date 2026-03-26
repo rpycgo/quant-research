@@ -1,0 +1,5 @@
+outs:
+- md5: 37ec75841114bc32c53ebad50a35ed73
+  size: 161185312
+  hash: md5
+  path: solusdt_1m.csv

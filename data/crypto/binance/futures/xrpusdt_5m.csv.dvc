@@ -1,0 +1,5 @@
+outs:
+- md5: 8139b7c196a232c5e8ec4b806fbb7ca1
+  size: 37591035
+  hash: md5
+  path: xrpusdt_5m.csv

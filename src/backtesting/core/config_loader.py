@@ -43,8 +43,9 @@ from typing import Any
 _MODEL_PACKAGE_MAP: dict[str, str] = {
     "mdrs_sde_btc": "mdrs_sde.configs",
     "mdrs_sde_eth": "mdrs_sde.configs",
-    "garch_btc": "garch_model.configs",
-    "garch_eth": "garch_model.configs",
+    "dl_regime_lstm_btc": "dl_regime.configs",
+    "dl_regime_tcn_btc": "dl_regime.configs",
+    "dl_regime_transformer_btc": "dl_regime.configs",
 }
 
 _DEFAULT_CONFIG_FILENAME = "default_config.toml"
@@ -96,9 +97,17 @@ class BacktestConfigLoader:
                 missing (the package may not be installed).
         """
         if model_key not in _MODEL_PACKAGE_MAP:
+            override_path = (
+                self.config_dir / "model_parameters" / f"{model_key}.toml"
+            )
+
+            if override_path.exists():
+                return self._read_toml(override_path)
+
             raise KeyError(
                 f"Unknown model key '{model_key}'. "
-                f"Register it in _MODEL_PACKAGE_MAP inside config_loader.py. "
+                f"Register it in _MODEL_PACKAGE_MAP or add "
+                f"configs/model_parameters/{model_key}.toml. "
                 f"Available keys: {list(_MODEL_PACKAGE_MAP)}"
             )
 

@@ -26,7 +26,7 @@ Registering a new model
 4. Register the key→class mapping in
    :data:`~backtesting.models.registry.ModelRegistry._REGISTRY`.
 """
-from src.backtesting.models.registry import ModelRegistry
+from backtesting.models.registry import ModelRegistry
 
 
 __all__ = ["ModelRegistry"]

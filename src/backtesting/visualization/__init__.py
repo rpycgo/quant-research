@@ -11,6 +11,6 @@ PerformancePlotter
     :class:`~backtesting.engines.performance.PerformanceAnalyzer`.
 """
 
-from src.backtesting.visualization.performance_plotter import PerformancePlotter
+from backtesting.visualization.performance_plotter import PerformancePlotter
 
 __all__ = ["PerformancePlotter"]

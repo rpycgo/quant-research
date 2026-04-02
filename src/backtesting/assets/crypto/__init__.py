@@ -13,7 +13,7 @@ CryptoPreprocessor
     channels) shared by every model adapter that targets crypto assets.
 """
 
-from src.backtesting.assets.crypto.loader import CryptoLoader
-from src.backtesting.assets.crypto.preprocessor import CryptoPreprocessor
+from backtesting.assets.crypto.loader import CryptoLoader
+from backtesting.assets.crypto.preprocessor import CryptoPreprocessor
 
 __all__ = ["CryptoLoader", "CryptoPreprocessor"]

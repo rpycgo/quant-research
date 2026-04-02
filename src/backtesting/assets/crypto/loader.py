@@ -22,7 +22,7 @@ import pathlib
 from typing import Any
 import pandas as pd
 
-from src.backtesting.core.base_loader import BaseLoader
+from backtesting.core.base_loader import BaseLoader
 
 
 logger = logging.getLogger(__name__)

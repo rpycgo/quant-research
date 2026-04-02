@@ -1,0 +1,21 @@
+# configs/model_parameters/dl_regime_tcn_btc.toml
+
+[model]
+architecture   = "tcn"
+checkpoint_dir = "checkpoints"
+
+[training]
+seq_len                 = 60
+batch_size              = 256
+max_epochs              = 100
+learning_rate           = 1.0e-3
+early_stopping_patience = 10
+val_split               = 0.2
+random_seed             = 42
+num_workers             = 0
+
+[tcn]
+num_channels  = [64, 64, 128, 128]
+kernel_size   = 3
+dilation_base = 2
+dropout       = 0.2

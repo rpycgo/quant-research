@@ -4,7 +4,9 @@
 
 ## Overview
 
-**quant-research** is a monorepo covering the full quantitative trading lifecycle — from real-time market data collection to systematic backtesting and performance analysis.
+**quant-research** is the single execution platform for quantitative trading research — from real-time market data collection to systematic backtesting and performance analysis.
+
+Model libraries ([mdrs-sde](https://github.com/rpycgo-research/mdrs-sde), [dl-regime](https://github.com/rpycgo/dl-regime)) are maintained as separate pure libraries. All execution entry points live here.
 
 ## Modules
 
@@ -20,16 +22,25 @@
 ```
 quant-research/
 ├── src/
-│   ├── backtesting/         Walk-forward backtesting framework
-│   ├── collector/           Binance WebSocket → Kafka producer
-│   ├── ingestor/            Kafka consumer → TimescaleDB
-│   └── utils/               Shared config loader
-├── configs/                 Backtesting configuration files
-├── dashboards/              Grafana dashboard definitions
-├── run_backtest.py          Backtesting entry-point
-├── run_collector.py         Collector entry-point
-├── run_ingestor.py          Ingestor entry-point
-├── docker-compose.yml       Infrastructure services
+│   ├── backtesting/              Walk-forward backtesting framework
+│   │   ├── cli/                  Installable CLI entry points
+│   │   ├── core/                 Base classes and config loader
+│   │   ├── engines/              Backtest and walk-forward engines
+│   │   ├── models/               Model adapters and registry
+│   │   │   └── adapters/         mdrs_sde, dl_regime, garch
+│   │   ├── assets/               Asset-specific data loaders
+│   │   └── visualization/        Performance plotters
+│   ├── collector/                Binance WebSocket → Kafka producer
+│   ├── ingestor/                 Kafka consumer → TimescaleDB
+│   ├── configs/                  Backtesting and data configuration
+│   │   └── model_parameters/     Per-model override configs
+│   └── utils/                    Shared config loader
+├── events/                       Detected breakout event files (DVC)
+├── dashboards/                   Grafana dashboard definitions
+├── run_collector.py              Collector entry-point
+├── run_ingestor.py               Ingestor entry-point
+├── run_backfill.py               Gap repair entry-point
+├── docker-compose.yml            Infrastructure services
 └── pyproject.toml
 ```
 
@@ -37,7 +48,7 @@ quant-research/
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - uv
 - Docker & Docker Compose
 
@@ -52,7 +63,7 @@ uv sync
 ### Infrastructure (TimescaleDB · Kafka · Grafana)
 
 ```bash
-cp .env.example .env   # DB_PASSWORD, DB_NAME, DB_USER 설정
+cp .env.example .env   # set DB_PASSWORD, DB_NAME, DB_USER
 docker-compose up -d
 ```
 
@@ -74,15 +85,47 @@ python run_backfill.py
 ### Backtesting
 
 ```bash
-python run_backtest.py --model mdrs_sde_btc --symbol BTCUSDT
-python run_backtest.py --list-models
+# List all registered models
+qr-backtest --list-models
+
+# Run backtest
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
+
+# With date override
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
+    --start 2024-01-01 --end 2026-01-31
+
+# Other registered models
+qr-backtest --model garch_btc --symbol BTCUSDT
+qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
+qr-backtest --model dl_regime_tcn_btc --symbol BTCUSDT
+qr-backtest --model dl_regime_transformer_btc --symbol BTCUSDT
 ```
+
+## Registered Models
+
+| Model key | Adapter | Source |
+|---|---|---|
+| `mdrs_sde_btc` | `MdrsSdeCryptoAdapter` | [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) |
+| `mdrs_sde_eth` | `MdrsSdeCryptoAdapter` | [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) |
+| `garch_btc` | `GarchCryptoAdapter` | arch package |
+| `garch_eth` | `GarchCryptoAdapter` | arch package |
+| `dl_regime_lstm_btc` | `DlRegimeCryptoAdapter` | [dl-regime](https://github.com/rpycgo/dl-regime) |
+| `dl_regime_tcn_btc` | `DlRegimeCryptoAdapter` | [dl-regime](https://github.com/rpycgo/dl-regime) |
+| `dl_regime_transformer_btc` | `DlRegimeCryptoAdapter` | [dl-regime](https://github.com/rpycgo/dl-regime) |
+
+## Adding a New Model
+
+1. Implement an adapter in `src/backtesting/models/adapters/<name>.py` inheriting `BaseModel`
+2. Register it in `src/backtesting/models/registry.py`
+3. Add `configs/model_parameters/<model_key>.toml` for local overrides
+4. If the model ships a `default_config.toml`, add it to `_MODEL_PACKAGE_MAP` in `config_loader.py`
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| Language | Python 3.11+ |
+| Language | Python 3.12+ |
 | Package management | uv |
 | Message broker | Apache Kafka (KRaft mode) |
 | Time-series DB | TimescaleDB (PostgreSQL 18) |
@@ -91,5 +134,6 @@ python run_backtest.py --list-models
 
 ## Related Repositories
 
-- [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) — PAITS for Bitcoin perpetual futures (MDRS-SDE model)
+- [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) — MDRS-SDE model library
+- [dl-regime](https://github.com/rpycgo/dl-regime) — Deep learning regime detection library
 - [mdrs-sde-theory](https://github.com/rpycgo/mdrs-sde-theory) — Theoretical foundations for MDRS-SDE

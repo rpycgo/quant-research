@@ -29,8 +29,8 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 from joblib import Parallel, delayed
 
-from src.backtesting.core.base_model import BaseModel
-from src.backtesting.engines.engine import GenericBacktestEngine
+from backtesting.core.base_model import BaseModel
+from backtesting.engines.engine import GenericBacktestEngine
 
 logger = logging.getLogger(__name__)
 

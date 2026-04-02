@@ -20,9 +20,9 @@ PerformanceAnalyzer
     Computes Sharpe, Sortino, MDD, win-rate, IC, and statistical
     significance metrics from a completed-trades ``DataFrame``.
 """
-from src.backtesting.engines.engine import GenericBacktestEngine
-from src.backtesting.engines.performance import PerformanceAnalyzer
-from src.backtesting.engines.walk_forward import WalkForwardRunner
+from backtesting.engines.engine import GenericBacktestEngine
+from backtesting.engines.performance import PerformanceAnalyzer
+from backtesting.engines.walk_forward import WalkForwardRunner
 
 
 __all__ = ["GenericBacktestEngine", "WalkForwardRunner", "PerformanceAnalyzer"]

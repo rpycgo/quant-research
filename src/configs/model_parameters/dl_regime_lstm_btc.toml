@@ -1,0 +1,24 @@
+# configs/model_parameters/dl_regime_lstm_btc.toml
+#
+# Local override for the DL regime LSTM model on BTCUSDT futures.
+# Keys absent here fall back to dl_regime/configs/default_config.toml.
+
+[model]
+architecture   = "lstm"
+checkpoint_dir = "checkpoints"
+
+[training]
+seq_len                 = 60
+batch_size              = 256
+max_epochs              = 100
+learning_rate           = 1.0e-3
+early_stopping_patience = 10
+val_split               = 0.2
+random_seed             = 42
+num_workers             = 0
+
+[lstm]
+hidden_size   = 128
+num_layers    = 2
+bidirectional = false
+dropout       = 0.2

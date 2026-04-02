@@ -1,42 +1,32 @@
 """
-run_backtest.py
-===============
-CLI entry-point for the quant-research backtesting module.
+backtesting.cli.backtest
+========================
+Installable CLI entry point for the quant-research backtesting module.
+
+Registered as ``qr-backtest`` in ``[project.scripts]``.
 
 Orchestrates the full pipeline:
 
-1. Load and preprocess OHLCV data via :class:`CryptoLoader` +
-   :class:`CryptoPreprocessor`.
-2. Construct the model adapter via :class:`ModelRegistry`.
-3. Run walk-forward analysis via :class:`WalkForwardRunner`.
-4. Compute and print performance metrics via :class:`PerformanceAnalyzer`.
+1. Load and preprocess OHLCV data via CryptoLoader + CryptoPreprocessor.
+2. Construct the model adapter via ModelRegistry.
+3. Run walk-forward analysis via WalkForwardRunner.
+4. Compute and print performance metrics via PerformanceAnalyzer.
 5. Persist trade results and parameter summaries to ``results/``.
 
 Usage
 -----
-Run from the repository root::
+::
 
-    python run_backtest.py --model mdrs_sde_btc --symbol BTCUSDT
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
 
-    python run_backtest.py --model garch_btc --symbol BTCUSDT \\
+    qr-backtest --model garch_btc --symbol BTCUSDT \\
         --start 2024-01-01 --end 2026-01-31
 
+    qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
+
     # List all registered models
-    python run_backtest.py --list-models
-
-Arguments
----------
---model         Model key registered in ModelRegistry (required unless
-                --list-models is passed).
---symbol        Trading pair symbol, e.g. BTCUSDT (default: BTCUSDT).
---start         Walk-forward start date ISO-8601 (overrides config).
---end           Walk-forward end date ISO-8601 (overrides config).
---config-dir    Path to configs/ directory relative to repo root
-                (default: configs).
---list-models   Print all registered model keys and exit.
---log-level     Python logging level (default: INFO).
+    qr-backtest --list-models
 """
-
 from __future__ import annotations
 
 import argparse
@@ -46,31 +36,26 @@ import pathlib
 import sys
 from datetime import datetime
 from typing import Any
+
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Project-root on sys.path so the script can be run from the repo root
-# without installing the package.
-# ---------------------------------------------------------------------------
-_REPO_ROOT = pathlib.Path(__file__).resolve().parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-from src.backtesting.assets.crypto import CryptoLoader, CryptoPreprocessor
-from src.backtesting.core.config_loader import BacktestConfigLoader
-from src.backtesting.engines import (
+from backtesting.assets.crypto import CryptoLoader, CryptoPreprocessor
+from backtesting.core.config_loader import BacktestConfigLoader
+from backtesting.engines import (
     GenericBacktestEngine,
     PerformanceAnalyzer,
     WalkForwardRunner,
 )
-from src.backtesting.models.registry import ModelRegistry
-
+from backtesting.models.registry import ModelRegistry
 from mdrs_sde.data.dataset_builder import DatasetBuilder
+
+# Repository root: src/backtesting/cli/backtest.py → 4 levels up
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="run_backtest",
+        prog="qr-backtest",
         description="quant-research walk-forward backtesting runner",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -101,8 +86,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config-dir",
         type=str,
-        default="configs",
-        help="Path to configs/ directory relative to the repository root.",
+        default=str(_REPO_ROOT / "src" / "configs"),
+        help="Path to configs/ directory.",
     )
     parser.add_argument(
         "--list-models",
@@ -132,16 +117,6 @@ def _override_wfa_dates(
     start: str | None,
     end: str | None,
 ) -> dict[str, Any]:
-    """Apply CLI date overrides to the walk-forward settings dict.
-
-    Args:
-        wfa_config: Parsed ``[walk_forward_settings]`` section.
-        start:      Optional CLI-supplied start date string.
-        end:        Optional CLI-supplied end date string.
-
-    Returns:
-        Updated dict (original is not mutated).
-    """
     cfg = wfa_config.copy()
     if start:
         cfg["start_date"] = start
@@ -156,16 +131,6 @@ def _save_results(
     model_key: str,
     symbol: str,
 ) -> None:
-    """Persist trade results and parameter summary to ``results/``.
-
-    Files are timestamped to prevent accidental overwrites between runs.
-
-    Args:
-        trades:        Completed trades ``DataFrame``.
-        param_summary: Per-window parameter dicts.
-        model_key:     Model identifier used in filenames.
-        symbol:        Trading pair symbol used in filenames.
-    """
     results_dir = _REPO_ROOT / "results"
     results_dir.mkdir(exist_ok=True)
 
@@ -180,7 +145,6 @@ def _save_results(
         logging.getLogger(__name__).info("Trades saved → %s", trades_path)
 
     with open(params_path, "w", encoding="utf-8") as fh:
-        # arch result objects are not JSON-serialisable; strip them
         serialisable = {
             w: {k: v for k, v in p.items() if isinstance(v, (int, float, str))}
             for w, p in param_summary.items()
@@ -190,11 +154,6 @@ def _save_results(
 
 
 def main() -> int:
-    """Run the walk-forward backtest pipeline.
-
-    Returns:
-        Exit code — 0 on success, 1 on argument / runtime error.
-    """
     parser = _build_arg_parser()
     args = parser.parse_args()
     _setup_logging(args.log_level)
@@ -242,15 +201,15 @@ def main() -> int:
     log.info("Loading data for %s …", args.symbol)
     raw_data = data_loader.load(
         symbol=args.symbol,
-        start=preprocessor_cfg['analysis_start_date'],
-        end=wfa_config['end_date'],
+        start=preprocessor_cfg["analysis_start_date"],
+        end=wfa_config["end_date"],
     )
 
     log.info("Preprocessing …")
     full_data = preprocessor.run_full_pipeline(raw_data)
 
     builder = DatasetBuilder(project_root=_REPO_ROOT)
-    events = builder.load_events('events_btc_5m.toml')
+    events = builder.load_events("events_btc_5m.toml")
     full_data = builder.apply_event_tagging(full_data, events)
     full_data = preprocessor.calculate_directional_indicator(full_data)
     train_data = builder.slice_training_data(full_data)
@@ -282,7 +241,6 @@ def main() -> int:
     metrics, _equity, _drawdown = PerformanceAnalyzer.calculate_metrics(all_trades)
     PerformanceAnalyzer.print_report(metrics)
 
-    # IC analysis uses ``confidence`` column if available, else ``signal``
     signal_col = "confidence" if "confidence" in all_trades.columns else "signal"
     if signal_col in full_data.columns:
         ic_df = PerformanceAnalyzer.calculate_ic(full_data, signal_col)

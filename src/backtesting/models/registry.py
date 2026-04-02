@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import logging
 
-from src.backtesting.core.base_model import BaseModel
-from src.backtesting.core.config_loader import BacktestConfigLoader
-from src.backtesting.models.adapters.garch import GarchCryptoAdapter
-from src.backtesting.models.adapters.mdrs_sde import MdrsSdeCryptoAdapter
+from backtesting.core.base_model import BaseModel
+from backtesting.core.config_loader import BacktestConfigLoader
+from backtesting.models.adapters.garch import GarchCryptoAdapter
+from backtesting.models.adapters.mdrs_sde import MdrsSdeCryptoAdapter
+from backtesting.models.adapters.dl_regime import DlRegimeCryptoAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ _REGISTRY: dict[str, type[BaseModel]] = {
     "mdrs_sde_eth": MdrsSdeCryptoAdapter,
     "garch_btc": GarchCryptoAdapter,
     "garch_eth": GarchCryptoAdapter,
+    "dl_regime_lstm_btc": DlRegimeCryptoAdapter,
+    "dl_regime_tcn_btc": DlRegimeCryptoAdapter,
+    "dl_regime_transformer_btc": DlRegimeCryptoAdapter,
 }
 
 

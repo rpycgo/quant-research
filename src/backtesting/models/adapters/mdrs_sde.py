@@ -31,7 +31,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.backtesting.core.base_model import BaseModel
+from backtesting.core.base_model import BaseModel
 
 logger = logging.getLogger(__name__)
 

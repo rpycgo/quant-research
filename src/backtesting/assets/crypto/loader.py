@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import logging
 import pathlib
+from datetime import date
 from typing import Any
 import pandas as pd
 
 from backtesting.core.base_loader import BaseLoader
-
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +36,36 @@ class CryptoLoader(BaseLoader):
 
     Attempts to fetch from Binance via ``ccxt`` first; if ``ccxt`` is not
     installed or the request fails, it falls back to a local CSV at
-    ``data/<symbol_lower>.csv``.
+    ``<ohlcv_directory>/<symbol_lower>_<interval>.csv``.
 
     Args:
         config: Parsed ``[binance_collection]`` section from
-            ``data_settings.toml``.  Must contain:
+            ``data_settings.toml``. Required keys:
 
             * ``supported_symbols`` (list[str])
             * ``interval``          (str)  — e.g. ``"5m"``
-            * ``output_directory``  (str)  — relative to project root
+            * ``ohlcv_directory``   (str)  — relative to project root
+
+        project_root: Absolute path to the repository root. Used to
+            resolve ``ohlcv_directory``.
 
     Example::
 
-        loader = CryptoLoader(config=data_cfg["binance_collection"])
+        loader = CryptoLoader(
+            config=data_cfg["binance_collection"],
+            project_root=Path("."),
+        )
         df = loader.load("BTCUSDT", "2024-01-01", "2026-01-31")
     """
-
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        project_root: pathlib.Path,
+        ) -> None:
         self._supported: list[str] = config.get("supported_symbols", [])
         self._interval: str = config.get("interval", "5m")
         self._output_dir: pathlib.Path = (
-            pathlib.Path(__file__).resolve().parent.parent.parent.parent.parent
-            / config.get("output_directory", "data")
+            project_root / config.get("ohlcv_directory", "data/crypto/binance/futures")
         )
 
     # ------------------------------------------------------------------
@@ -69,8 +77,8 @@ class CryptoLoader(BaseLoader):
         symbol: str,
         start: str,
         end: str,
-    ) -> pd.DataFrame:
-        """Fetch OHLCV data for *symbol* over ``[start, end]``.
+        ) -> pd.DataFrame:
+        """Load OHLCV data — fetch from Binance or fall back to local CSV.
 
         Args:
             symbol: Trading pair, e.g. ``"BTCUSDT"``.
@@ -92,9 +100,58 @@ class CryptoLoader(BaseLoader):
                 "Exchange fetch failed for %s — falling back to local CSV.",
                 symbol,
             )
-            df = self._load_from_csv(symbol, self._interval)
+            df = self._load_from_csv(symbol)
 
         return self._clean(df, start, end)
+
+    def fetch(
+        self,
+        symbol: str,
+        start: str,
+        end: str | None = None,
+        ) -> pd.DataFrame:
+        """Fetch OHLCV data from Binance only (no CSV fallback).
+
+        Used by ``qr-collect`` CLI to explicitly collect and save fresh data.
+
+        Args:
+            symbol: Trading pair, e.g. ``"BTCUSDT"``.
+            start:  ISO-8601 date string.
+            end:    ISO-8601 date string. Defaults to today.
+
+        Returns:
+            Raw ``DataFrame`` from Binance. Empty if fetch fails.
+        """
+        self._validate_symbol(symbol)
+        end = end or date.today().isoformat()
+
+        df = self._fetch_from_exchange(symbol, start, end)
+        if df is None or df.empty:
+            logger.error("Failed to fetch %s from Binance.", symbol)
+            return pd.DataFrame()
+
+        return self._clean(df, start, end)
+
+    def save(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        ) -> pathlib.Path:
+        """Save DataFrame to ``<ohlcv_directory>/<symbol_lower>_<interval>.csv``.
+
+        Args:
+            df:     OHLCV ``DataFrame`` to save.
+            symbol: Trading pair symbol used in the filename.
+
+        Returns:
+            Absolute path of the saved file.
+        """
+        save_path = self._output_dir / f"{symbol.lower()}_{self._interval}.csv"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(save_path)
+        logger.info("Saved %d rows → %s", len(df), save_path)
+
+        return save_path
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -104,8 +161,7 @@ class CryptoLoader(BaseLoader):
         if self._supported and symbol not in self._supported:
             raise ValueError(
                 f"Symbol '{symbol}' is not supported. "
-                f"Add it to configs/data_settings.toml → supported_symbols "
-                f"or implement a dedicated loader. "
+                f"Add it to configs/data_settings.toml → supported_symbols. "
                 f"Currently supported: {self._supported}"
             )
 
@@ -114,7 +170,7 @@ class CryptoLoader(BaseLoader):
         symbol: str,
         start: str,
         end: str,
-    ) -> pd.DataFrame | None:
+        ) -> pd.DataFrame | None:
         """Attempt to fetch OHLCV candles from Binance via ccxt.
 
         Returns ``None`` on any error so the caller can fall back to CSV.
@@ -150,40 +206,26 @@ class CryptoLoader(BaseLoader):
             logger.debug("ccxt fetch error for %s: %s", symbol, exc)
             return None
 
-    def _load_from_csv(self, symbol: str, interval: str) -> pd.DataFrame:
+    def _load_from_csv(self, symbol: str) -> pd.DataFrame:
         """Load OHLCV data from a local CSV file.
 
-        Expects a file named ``<symbol_lower>.csv`` (e.g. ``btcusdt.csv``)
-        in the directory configured by ``output_directory``.
-
-        Args:
-            symbol: Trading pair symbol, e.g. ``"BTCUSDT"``.
-
-        Returns:
-            Parsed ``DataFrame``.
+        Expects ``<ohlcv_directory>/<symbol_lower>_<interval>.csv``.
 
         Raises:
             FileNotFoundError: If the expected CSV file does not exist.
         """
-        ## To do
-        ## hard coding the path for now, but ideally this should be configurable or discovered
-        csv_path = self._output_dir / 'crypto/binance/futures' / f"{symbol.lower()}_{interval}.csv"
-
-        # Also try the naming convention used in the SDE repo (btcusdt_future.csv)
-        if not csv_path.exists():
-            csv_path = self._output_dir / f"{symbol.lower()}_future_{interval}.csv"
+        csv_path = self._output_dir / f"{symbol.lower()}_{self._interval}.csv"
 
         if not csv_path.exists():
             raise FileNotFoundError(
                 f"No local CSV found for '{symbol}'. "
-                f"Expected path: {csv_path}. "
-                f"Run the data collector or provide a CSV file."
+                f"Expected: {csv_path}. "
+                f"Run `qr-collect --symbol {symbol} --start <date>` first."
             )
 
         logger.info("Loading %s from local CSV: %s", symbol, csv_path)
         df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
 
-        # Ensure the index is timezone-aware UTC
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
 
@@ -194,26 +236,12 @@ class CryptoLoader(BaseLoader):
         df: pd.DataFrame,
         start: str,
         end: str,
-    ) -> pd.DataFrame:
-        """Normalise, slice, and cast the raw ``DataFrame``.
-
-        Args:
-            df:    Raw OHLCV ``DataFrame``.
-            start: Slice start (ISO-8601 date string).
-            end:   Slice end   (ISO-8601 date string).
-
-        Returns:
-            Cleaned ``DataFrame`` ready for the preprocessor.
-        """
-        # Keep only canonical OHLCV columns
+        ) -> pd.DataFrame:
+        """Normalise, slice, and cast the raw DataFrame."""
         df = df[[c for c in _OHLCV_COLUMNS if c in df.columns]].copy()
         df = df.astype(float)
-
-        # Drop duplicates and sort
         df = df[~df.index.duplicated(keep="first")]
         df = df.sort_index()
-
-        # Slice to the requested window
         df = df.loc[start:end]
 
         return df

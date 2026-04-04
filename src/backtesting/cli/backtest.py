@@ -195,7 +195,10 @@ def main() -> int:
     collection_cfg = ds_cfg["binance_collection"]
     preprocessor_cfg = ds_cfg["event_detection"]
 
-    data_loader = CryptoLoader(config=collection_cfg)
+    data_loader = CryptoLoader(
+        config=collection_cfg,
+        project_root=_REPO_ROOT,
+    )
     preprocessor = CryptoPreprocessor(settings=preprocessor_cfg)
 
     log.info("Loading data for %s …", args.symbol)
@@ -208,8 +211,11 @@ def main() -> int:
     log.info("Preprocessing …")
     full_data = preprocessor.run_full_pipeline(raw_data)
 
+    events_dir = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
+    events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
     builder = DatasetBuilder(project_root=_REPO_ROOT)
-    events = builder.load_events("events_btc_5m.toml")
+    events = builder.load_events_from_path(events_path)
+
     full_data = builder.apply_event_tagging(full_data, events)
     full_data = preprocessor.calculate_directional_indicator(full_data)
     train_data = builder.slice_training_data(full_data)

@@ -1,0 +1,6 @@
+outs:
+- md5: b41e1e3353051eece8250e7ee0d81d3a.dir
+  size: 243768
+  nfiles: 5
+  hash: md5
+  path: events

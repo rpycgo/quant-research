@@ -91,9 +91,21 @@ _REGISTRY: dict[str, ModelEntry] = {
     "hmm_sol":                   ModelEntry(HMMRegimeAdapter),
     "hmm_xrp":                   ModelEntry(HMMRegimeAdapter),
     # DL Regime
+    ## LSTM
     "dl_regime_lstm_btc":        ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_lstm_eth":        ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_lstm_sol":        ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_lstm_xrp":        ModelEntry(DlRegimeCryptoAdapter),
+    ## TCN
     "dl_regime_tcn_btc":         ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_tcn_eth":         ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_tcn_sol":         ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_tcn_xrp":         ModelEntry(DlRegimeCryptoAdapter),
+    ## Transformer
     "dl_regime_transformer_btc": ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_transformer_eth": ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_transformer_sol": ModelEntry(DlRegimeCryptoAdapter),
+    "dl_regime_transformer_xrp": ModelEntry(DlRegimeCryptoAdapter),
 }
 
 

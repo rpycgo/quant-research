@@ -4,7 +4,7 @@ backtesting.engines.walk_forward
 Walk-forward analysis (WFA) orchestrator.
 
 Slices the full dataset into rolling train / test windows, calls
-``model.fit`` → ``model.predict`` → ``engine.run_backtest`` for each
+``model.fit`` -> ``model.predict`` -> ``engine.run_backtest`` for each
 window (optionally in parallel via ``joblib``), and aggregates the
 per-window results into a single trades ``DataFrame`` and a summary of
 model parameters.
@@ -17,8 +17,18 @@ Given a ``start_date``, an ``end_date``, ``training_months``, and
 * Training window : ``[test_start - training_months, test_start)``
 * Testing window  : ``[test_start, test_start + testing_months)``
 * Windows advance by one calendar month (``freq="MS"``).
-"""
 
+EMA sigma reference
+--------------------
+Before parallel execution, ``_precompute_sigma_reference()`` computes a
+per-window ``reference_sigma_1`` from the log_return rolling std of the
+preceding training slice, smoothed with an EMA. This replaces the fixed
+config value so that each window's TP / SL scaling adapts to the recent
+volatility regime. The first window always uses the config default.
+
+Controlled by ``use_ema_sigma`` in ``[filters]`` and ``ema_sigma_span``
+in ``[walk_forward_settings]`` of ``backtest_settings.toml``.
+"""
 from __future__ import annotations
 
 import logging
@@ -62,22 +72,25 @@ class WalkForwardRunner:
         engine:        :class:`~backtesting.engines.engine.GenericBacktestEngine`
                        instance — already constructed with backtest config.
         wfa_config:    Parsed ``[walk_forward_settings]`` section from
-                       ``backtest_settings.toml``.  Required keys:
+                       ``backtest_settings.toml``. Required keys:
                        ``start_date``, ``end_date``, ``training_months``,
                        ``testing_months``, ``parallel_jobs``.
+                       Optional: ``ema_sigma_span`` (default: 3).
+        filter_config: Parsed ``[filters]`` section from
+                       ``backtest_settings.toml``. Controls ``use_ema_sigma``
+                       and other filter toggles. Defaults to empty dict.
 
     Example::
-
-        from backtesting.core.config_loader import BacktestConfigLoader
-        from backtesting.engines import GenericBacktestEngine, WalkForwardRunner
-        from backtesting.models.registry import ModelRegistry
 
         loader  = BacktestConfigLoader()
         bt_cfg  = loader.get_backtest_settings()
         model   = ModelRegistry.get("mdrs_sde_btc", loader)
         engine  = GenericBacktestEngine(bt_cfg)
-        runner  = WalkForwardRunner(model, engine, bt_cfg["walk_forward_settings"])
-
+        runner  = WalkForwardRunner(
+            model, engine,
+            wfa_config=bt_cfg["walk_forward_settings"],
+            filter_config=bt_cfg["filters"],
+        )
         result  = runner.run(preprocessed_data, train_data)
     """
     def __init__(
@@ -85,7 +98,8 @@ class WalkForwardRunner:
         model: BaseModel,
         engine: GenericBacktestEngine,
         wfa_config: dict[str, Any],
-    ) -> None:
+        filter_config: dict[str, Any] | None = None,
+        ) -> None:
         self._model = model
         self._engine = engine
         self._start = pd.Timestamp(wfa_config["start_date"])
@@ -93,28 +107,33 @@ class WalkForwardRunner:
         self._train_months = wfa_config.get("training_months", 3)
         self._test_months = wfa_config.get("testing_months", 1)
         self._n_jobs = wfa_config.get("parallel_jobs", 1)
+        self._ema_sigma_span = wfa_config.get("ema_sigma_span", 3)
+
+        filters = filter_config or {}
+        self._use_ema_sigma = filters.get("use_ema_sigma", True)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
     def run(
         self,
         full_data: pd.DataFrame,
         train_data: pd.DataFrame | None = None,
-    ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
+        ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
         """Execute the full walk-forward analysis.
 
         Args:
             full_data:  Complete preprocessed ``DataFrame`` used for the
                         testing windows.
             train_data: Optional separate training-eligible subset (e.g.
-                        in-zone rows only for the SDE model).  Falls back to
+                        in-zone rows only for the SDE model). Falls back to
                         *full_data* when ``None``.
 
         Returns:
             A 2-tuple:
 
-            * ``all_trades``   — concatenated trades ``DataFrame`` sorted by
+            * ``all_trades``    — concatenated trades ``DataFrame`` sorted by
               ``entry_time``.
             * ``param_summary`` — dict mapping window labels to their
               estimated model parameter dicts.
@@ -135,10 +154,22 @@ class WalkForwardRunner:
             type(self._model).__name__,
         )
 
-        window_results = Parallel(
-            n_jobs=self._n_jobs
-        )(
-            delayed(self._process_window)(ts, train_data, full_data)
+        fallback_sigma = self._engine.risk_parameters.get("reference_sigma_1", 14.665)
+
+        if self._use_ema_sigma:
+            ref_sigma_map = self._precompute_sigma_reference(
+                train_data=train_data,
+                test_starts=test_starts,
+                fallback=fallback_sigma,
+                ema_span=self._ema_sigma_span,
+            )
+            logger.info("EMA sigma reference enabled (span=%d).", self._ema_sigma_span)
+        else:
+            ref_sigma_map = {ts: fallback_sigma for ts in test_starts}
+            logger.info("EMA sigma reference disabled — using fixed ref_sigma=%.3f.", fallback_sigma)
+
+        window_results = Parallel(n_jobs=self._n_jobs)(
+            delayed(self._process_window)(ts, train_data, full_data, ref_sigma_map[ts])
             for ts in test_starts
         )
 
@@ -147,26 +178,27 @@ class WalkForwardRunner:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
     def _process_window(
         self,
         test_start: pd.Timestamp,
         train_data: pd.DataFrame,
         full_data: pd.DataFrame,
-    ) -> WindowResult | None:
+        ref_sigma: float,
+        ) -> WindowResult | None:
         """Execute one walk-forward window.
 
         Args:
             test_start: First timestamp of the out-of-sample period.
             train_data: Full training-eligible dataset (pre-filtered).
             full_data:  Full dataset for the out-of-sample slice.
+            ref_sigma:  EMA-smoothed reference_sigma_1 for this window.
 
         Returns:
-            :class:`WindowResult` on success, ``None`` on irrecoverable
-            error.
+            :class:`WindowResult` on success, ``None`` on irrecoverable error.
         """
         label = test_start.strftime("%Y-%m-%d")
 
-        # Slice train window
         train_end = test_start - pd.Timedelta(seconds=1)
         train_start = train_end - relativedelta(months=self._train_months)
         test_end = min(
@@ -186,7 +218,7 @@ class WalkForwardRunner:
             )
             return None
 
-        # Fit → predict → run backtest
+        # Fit
         try:
             params = self._model.fit(train_slice)
         except Exception as exc:  # noqa: BLE001
@@ -197,14 +229,17 @@ class WalkForwardRunner:
             logger.warning("Window %s: fit() returned empty params.", label)
             return None
 
+        # Predict
         try:
             signal_df = self._model.predict(test_slice, params)
         except Exception as exc:  # noqa: BLE001
             logger.error("predict() failed for window %s: %s", label, exc)
             return None
 
-        dynamic_params = self._engine.build_dynamic_params(params)
+        # Build dynamic params with EMA sigma reference
+        dynamic_params = self._engine.build_dynamic_params(params, ref_sigma=ref_sigma)
 
+        # Run backtest
         try:
             trades = self._engine.run_backtest(signal_df, dynamic_params)
         except Exception as exc:  # noqa: BLE001
@@ -212,6 +247,7 @@ class WalkForwardRunner:
             return None
 
         signal_cols = [c for c in ("signal", "confidence", "Close") if c in signal_df]
+
         return WindowResult(
             window_label=label,
             trades=trades,
@@ -219,10 +255,65 @@ class WalkForwardRunner:
             signal_df=signal_df[signal_cols],
         )
 
+    def _precompute_sigma_reference(
+        self,
+        train_data: pd.DataFrame,
+        test_starts: pd.DatetimeIndex,
+        fallback: float,
+        ema_span: int = 3,
+        ) -> dict[pd.Timestamp, float]:
+        """Compute per-window reference_sigma_1 using EMA of rolling std.
+
+        For each test window, computes the log_return std of the preceding
+        training slice (scaled to match sigma_1 units: x100), then applies
+        EMA smoothing across windows to reduce noise. The first window always
+        uses the config fallback value.
+
+        Args:
+            train_data:  Full training-eligible dataset containing log_return.
+            test_starts: Ordered sequence of test window start timestamps.
+            fallback:    Config default reference_sigma_1 for the first window
+                         and when the training slice is too small.
+            ema_span:    EMA span for smoothing across windows (default: 3).
+
+        Returns:
+            Dict mapping each test_start timestamp to its ref_sigma value.
+        """
+        raw_sigmas: list[float] = []
+
+        for ts in test_starts:
+            train_end = ts - pd.Timedelta(seconds=1)
+            train_start = train_end - relativedelta(months=self._train_months)
+            slice_ = train_data.loc[train_start:train_end]
+
+            if len(slice_) > 10 and "log_return" in slice_.columns:
+                raw_sigmas.append(float(slice_["log_return"].std() * 100))
+            else:
+                raw_sigmas.append(fallback)
+
+        smoothed = (
+            pd.Series(raw_sigmas)
+            .ewm(span=ema_span, adjust=False)
+            .mean()
+            .tolist()
+        )
+
+        # First window always uses config default
+        smoothed[0] = fallback
+
+        logger.debug(
+            "EMA sigma reference — first: %.3f, last: %.3f, span: %d",
+            smoothed[0],
+            smoothed[-1],
+            ema_span,
+        )
+
+        return dict(zip(test_starts, smoothed))
+
     @staticmethod
     def _aggregate(
         results: list[WindowResult | None],
-    ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
+        ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
         """Concatenate per-window results into analysis-ready outputs.
 
         Args:
@@ -250,4 +341,5 @@ class WalkForwardRunner:
             .sort_values("entry_time")
             .reset_index(drop=True)
         )
+
         return all_trades, param_summary

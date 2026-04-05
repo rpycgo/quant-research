@@ -1,0 +1,6 @@
+# configs/model_parameters/rsi_btc.toml
+
+[rsi_settings]
+period     = 14
+oversold   = 30
+overbought = 70

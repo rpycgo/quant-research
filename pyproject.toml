@@ -1,6 +1,6 @@
 [project]
 name = "quant-research"
-version = "1.9.0"
+version = "1.10.0"
 description = "Quantitative research and backtesting platform"
 authors = [{ name = "rpycgo", email = "skyd0608@gmail.com" }]
 requires-python = ">=3.12,<3.14"
@@ -27,6 +27,7 @@ qr-backtest            = "backtesting.cli.backtest:main"
 qr-buy-and-hold        = "backtesting.cli.buy_and_hold:main"
 qr-data-collect        = "data.cli.data_collect:main"
 qr-mdrs-event-detect   = "strategies.mdrs_sde.cli.event_detect:main"
+qr-dl-train            = "strategies.dl_regime.cli.train:main"
 qr-validate            = "backtesting.cli.validate:main"
 
 [build-system]

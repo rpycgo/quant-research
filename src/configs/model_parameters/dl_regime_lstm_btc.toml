@@ -8,7 +8,7 @@ architecture   = "lstm"
 checkpoint_dir = "checkpoints"
 
 [training]
-seq_len                 = 60
+seq_len                 = 288
 batch_size              = 256
 max_epochs              = 100
 learning_rate           = 1.0e-3

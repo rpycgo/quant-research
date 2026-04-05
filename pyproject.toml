@@ -18,10 +18,12 @@ dependencies = [
     "dvc-gdrive>=3.0.1",
     "ccxt>=4.5.45",
     "joblib>=1.5.3",
+    "hmmlearn>=0.3.3",
 ]
 
 [project.scripts]
 qr-backtest            = "backtesting.cli.backtest:main"
+qr-buy-and-hold        = "backtesting.cli.buy_and_hold:main"
 qr-data-collect        = "data.cli.data_collect:main"
 qr-mdrs-event-detect   = "strategies.mdrs_sde.cli.event_detect:main"
 

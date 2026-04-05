@@ -13,6 +13,10 @@ Orchestrates the full pipeline:
 4. Compute and print performance metrics via PerformanceAnalyzer.
 5. Persist trade results and parameter summaries to ``results/``.
 
+Event tagging is only applied when the model requires it (controlled by
+``ModelRegistry.requires_event_tagging()``). Rule-based and statistical
+benchmark models skip this step and use full_data as train_data directly.
+
 Usage
 -----
 ::
@@ -22,7 +26,10 @@ Usage
     qr-backtest --model garch_btc --symbol BTCUSDT \\
         --start 2024-01-01 --end 2026-01-31
 
-    qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
+    qr-backtest --model simple_breakout_btc --symbol BTCUSDT
+    qr-backtest --model ma_crossover_btc --symbol BTCUSDT
+    qr-backtest --model rsi_btc --symbol BTCUSDT
+    qr-backtest --model hmm_btc --symbol BTCUSDT
 
     # Ablation flags
     qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma
@@ -227,7 +234,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 2. Data loading and preprocessing
     # ------------------------------------------------------------------
-    collection_cfg = ds_cfg["binance_collection"]
+    collection_cfg   = ds_cfg["binance_collection"]
     preprocessor_cfg = ds_cfg["event_detection"]
 
     data_loader = CryptoLoader(
@@ -246,19 +253,28 @@ def main() -> int:
     log.info("Preprocessing …")
     full_data = preprocessor.run_full_pipeline(raw_data)
 
-    events_dir = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
-    events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
-    builder = DatasetBuilder(project_root=_REPO_ROOT)
-    events = builder.load_events_from_path(events_path)
-
-    full_data = builder.apply_event_tagging(full_data, events)
-    full_data = preprocessor.calculate_directional_indicator(full_data)
-    train_data = builder.slice_training_data(full_data)
+    # ------------------------------------------------------------------
+    # 3. Event tagging (MDRS-SDE only)
+    # ------------------------------------------------------------------
+    if ModelRegistry.requires_event_tagging(args.model):
+        log.info("Applying event tagging for %s ...", args.model)
+        events_dir  = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
+        events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
+        builder     = DatasetBuilder(project_root=_REPO_ROOT)
+        events      = builder.load_events_from_path(events_path)
+        full_data   = builder.apply_event_tagging(full_data, events)
+        full_data   = preprocessor.calculate_directional_indicator(full_data)
+        train_data  = builder.slice_training_data(full_data)
+        log.info("Event tagging complete — %d training rows.", len(train_data))
+    else:
+        log.info("Skipping event tagging for %s.", args.model)
+        full_data  = preprocessor.calculate_directional_indicator(full_data)
+        train_data = full_data
 
     # ------------------------------------------------------------------
-    # 3. Model and engine construction
+    # 4. Model and engine construction
     # ------------------------------------------------------------------
-    model = ModelRegistry.get(args.model, loader)
+    model  = ModelRegistry.get(args.model, loader)
     engine = GenericBacktestEngine(config=bt_cfg)
     runner = WalkForwardRunner(
         model=model,
@@ -268,7 +284,7 @@ def main() -> int:
     )
 
     # ------------------------------------------------------------------
-    # 4. Walk-forward analysis
+    # 5. Walk-forward analysis
     # ------------------------------------------------------------------
     log.info("Starting walk-forward analysis ...")
     all_trades, param_summary = runner.run(full_data, train_data)
@@ -278,7 +294,7 @@ def main() -> int:
         return 1
 
     # ------------------------------------------------------------------
-    # 5. Performance report
+    # 6. Performance report
     # ------------------------------------------------------------------
     metrics, _equity, _drawdown = PerformanceAnalyzer.calculate_metrics(all_trades)
     PerformanceAnalyzer.print_report(metrics)
@@ -290,7 +306,7 @@ def main() -> int:
         print(ic_df.to_string())
 
     # ------------------------------------------------------------------
-    # 6. Persist results
+    # 7. Persist results
     # ------------------------------------------------------------------
     _save_results(all_trades, param_summary, args.model, args.symbol)
 

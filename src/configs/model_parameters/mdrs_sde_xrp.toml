@@ -1,0 +1,10 @@
+# configs/model_parameters/mdrs_sde_xrp.toml
+#
+# Local override for the MDRS-SDE model on XRPUSDT futures.
+
+[sde_priors]
+gamma_mu    = 3.0
+gamma_lower = 1.5
+
+[mcmc_settings]
+draws = 2000

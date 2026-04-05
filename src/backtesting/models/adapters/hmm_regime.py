@@ -1,0 +1,183 @@
+"""
+backtesting.models.adapters.hmm_regime
+========================================
+2-state Gaussian Hidden Markov Model (HMM) regime-switching system.
+
+Fits a Gaussian HMM on log-returns to identify two latent states.
+The state with higher mean return is labeled bullish (Long signal),
+the other bearish (Short signal).
+
+Used as a direct regime-switching baseline for MDRS-SDE. Both models
+detect market regimes but differ fundamentally: HMM uses discrete
+hidden states while MDRS-SDE uses a continuous sigmoid-weighted blend
+of mean-reversion and trend-following dynamics.
+
+Requires: hmmlearn (uv add hmmlearn)
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from hmmlearn.hmm import GaussianHMM
+
+from backtesting.core.base_model import BaseModel
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_N_STATES   = 2
+_DEFAULT_N_ITER     = 100
+_DEFAULT_COVARIANCE = "full"
+
+
+class HMMRegimeAdapter(BaseModel):
+    """2-state Gaussian HMM regime-switching adapter.
+
+    Args:
+        model_config:    Config dict. Optional keys under ``[hmm_settings]``:
+                         ``n_states`` (default 2), ``n_iter`` (default 100),
+                         ``covariance_type`` (default "full").
+        backtest_config: Parsed backtest settings dict (unused).
+
+    Raises:
+        ImportError: If ``hmmlearn`` is not installed.
+    """
+    def __init__(
+        self,
+        model_config: dict[str, Any],
+        backtest_config: dict[str, Any],
+        ) -> None:
+        hmm_cfg = model_config.get("hmm_settings", {})
+        self._n_states   = int(hmm_cfg.get("n_states",        _DEFAULT_N_STATES))
+        self._n_iter     = int(hmm_cfg.get("n_iter",          _DEFAULT_N_ITER))
+        self._covariance = hmm_cfg.get("covariance_type", _DEFAULT_COVARIANCE)
+
+    # ------------------------------------------------------------------
+    # BaseModel interface
+    # ------------------------------------------------------------------
+
+    def fit(self, train_data: pd.DataFrame) -> dict[str, Any]:
+        """Fit Gaussian HMM on training log-returns.
+
+        Args:
+            train_data: In-sample ``DataFrame`` with ``log_return`` column.
+
+        Returns:
+            Dict with ``model``, ``bullish_state``, and SNR-like fallback
+            params (``alpha_long``, ``alpha_short``, ``sigma_1``) for
+            ``build_dynamic_params`` compatibility.
+            Returns empty dict on fitting failure.
+
+        Raises:
+            ImportError: If ``hmmlearn`` is not installed.
+        """
+        self._check_hmmlearn()
+
+        returns = train_data["log_return"].dropna().values.reshape(-1, 1)
+
+        if len(returns) < self._n_states * 10:
+            logger.warning(
+                "HMMRegimeAdapter.fit(): insufficient training rows (%d).",
+                len(returns),
+            )
+            return {}
+
+        try:
+            model = GaussianHMM(
+                n_components=self._n_states,
+                covariance_type=self._covariance,
+                n_iter=self._n_iter,
+                random_state=42,
+            )
+            model.fit(returns)
+
+            means = model.means_.flatten()
+            bullish_state = int(np.argmax(means))
+            bearish_state = 1 - bullish_state
+
+            logger.info(
+                "HMM fitted — state means: %s | bullish state: %d",
+                [f"{m:.6f}" for m in means],
+                bullish_state,
+            )
+
+            return {
+                "model":         model,
+                "bullish_state": bullish_state,
+                # Fallback SNR params for build_dynamic_params
+                "alpha_long":  float(max(means[bullish_state] * 100, 0.5)),
+                "alpha_short": float(max(-means[bearish_state] * 100, 0.5)),
+                "sigma_1":     float(
+                    np.sqrt(model.covars_[bullish_state].flatten()[0]) * 100
+                ),
+            }
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("HMM fitting failed: %s", exc)
+            return {}
+
+    def predict(
+        self,
+        test_data: pd.DataFrame,
+        params: dict[str, Any],
+        ) -> pd.DataFrame:
+        """Generate regime signals from HMM state predictions.
+
+        Args:
+            test_data: Out-of-sample ``DataFrame`` with ``log_return`` column.
+            params:    Dict from :meth:`fit` containing ``model`` and
+                       ``bullish_state``.
+
+        Returns:
+            ``test_data`` with ``signal``, ``confidence``,
+            ``hmm_state``, ``regime_prob`` columns added.
+        """
+        df = test_data.copy()
+        model = params.get("model")
+
+        if model is None:
+            df["signal"]      = 0
+            df["confidence"]  = 0.0
+            df["hmm_state"]   = -1
+            df["regime_prob"] = 0.5
+            return df
+
+        bullish_state = params.get("bullish_state", 0)
+        returns = df["log_return"].fillna(0).values.reshape(-1, 1)
+
+        try:
+            states = model.predict(returns)
+            probs  = model.predict_proba(returns)
+
+            df["hmm_state"]   = states
+            df["regime_prob"] = probs[:, bullish_state]
+            df["confidence"]  = df["regime_prob"]
+
+            df["signal"] = 0
+            df.loc[df["hmm_state"] == bullish_state, "signal"] =  1
+            df.loc[df["hmm_state"] != bullish_state, "signal"] = -1
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("HMM prediction failed: %s", exc)
+            df["signal"]      = 0
+            df["confidence"]  = 0.0
+            df["hmm_state"]   = -1
+            df["regime_prob"] = 0.5
+
+        return df
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _check_hmmlearn() -> None:
+        try:
+            import hmmlearn  # noqa: F401  # type: ignore[import]
+        except ModuleNotFoundError as exc:
+            raise ImportError(
+                "hmmlearn is required for HMMRegimeAdapter. "
+                "Install with: uv add hmmlearn"
+            ) from exc

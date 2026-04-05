@@ -224,6 +224,34 @@ class GenericBacktestEngine(BaseEngine):
             ),
         }
 
+    def get_fixed_params(self) -> dict[str, Any]:
+        """Return fixed execution parameters directly from config.
+
+        Used by benchmark models that do not produce MCMC posterior
+        estimates (GARCH, Simple Breakout, MA Crossover, RSI, HMM, DL).
+        Bypasses SNR scaling and EMA sigma reference entirely, ensuring
+        all benchmark models run under identical execution conditions.
+
+        Returns:
+            Dictionary of fixed execution parameters compatible with
+            :meth:`run_backtest`.
+        """
+        tp    = self.trading_parameters
+        scale = self.scaling_parameters
+
+        return {
+            "tp_long":              tp["tp_long"],
+            "sl_long":              tp["sl_long"],
+            "tp_short":             tp["tp_short"],
+            "sl_short":             tp["sl_short"],
+            "max_hold":             tp["max_hold_hours"],
+            "trailing_start_long":  tp["trailing_stop_start_ratio"],
+            "trailing_start_short": (
+                tp["trailing_stop_start_ratio"]
+                * scale["short_trailing_multiplier"]
+            ),
+        }
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -320,6 +348,7 @@ class GenericBacktestEngine(BaseEngine):
         trade_type: str,
         result: str,
         ) -> dict[str, Any]:
+
         return {
             "PnL": pnl,
             "entry_time": entry_time,

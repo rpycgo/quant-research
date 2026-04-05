@@ -23,6 +23,7 @@ dependencies = [
 
 [project.scripts]
 qr-backtest            = "backtesting.cli.backtest:main"
+qr-buy-and-hold        = "backtesting.cli.buy_and_hold:main"
 qr-data-collect        = "data.cli.data_collect:main"
 qr-mdrs-event-detect   = "strategies.mdrs_sde.cli.event_detect:main"
 

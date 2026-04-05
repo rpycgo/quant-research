@@ -79,6 +79,11 @@ class WalkForwardRunner:
         filter_config: Parsed ``[filters]`` section from
                        ``backtest_settings.toml``. Controls ``use_ema_sigma``
                        and other filter toggles. Defaults to empty dict.
+        use_dynamic_params: When ``True``, uses ``build_dynamic_params()``
+                       with SNR scaling and EMA sigma reference (MDRS-SDE).
+                       When ``False``, uses ``get_fixed_params()`` with
+                       config TP/SL values (all benchmark models).
+                       Default ``False``.
 
     Example::
 
@@ -99,6 +104,7 @@ class WalkForwardRunner:
         engine: GenericBacktestEngine,
         wfa_config: dict[str, Any],
         filter_config: dict[str, Any] | None = None,
+        use_dynamic_params: bool = False,
         ) -> None:
         self._model = model
         self._engine = engine
@@ -108,6 +114,7 @@ class WalkForwardRunner:
         self._test_months = wfa_config.get("testing_months", 1)
         self._n_jobs = wfa_config.get("parallel_jobs", 1)
         self._ema_sigma_span = wfa_config.get("ema_sigma_span", 3)
+        self._use_dynamic_params = use_dynamic_params
 
         filters = filter_config or {}
         self._use_ema_sigma = filters.get("use_ema_sigma", True)
@@ -156,7 +163,7 @@ class WalkForwardRunner:
 
         fallback_sigma = self._engine.risk_parameters.get("reference_sigma_1", 14.665)
 
-        if self._use_ema_sigma:
+        if self._use_dynamic_params and self._use_ema_sigma:
             ref_sigma_map = self._precompute_sigma_reference(
                 train_data=train_data,
                 test_starts=test_starts,
@@ -166,7 +173,10 @@ class WalkForwardRunner:
             logger.info("EMA sigma reference enabled (span=%d).", self._ema_sigma_span)
         else:
             ref_sigma_map = {ts: fallback_sigma for ts in test_starts}
-            logger.info("EMA sigma reference disabled — using fixed ref_sigma=%.3f.", fallback_sigma)
+            if not self._use_dynamic_params:
+                logger.info("Dynamic params disabled — using fixed config TP/SL.")
+            else:
+                logger.info("EMA sigma reference disabled — using fixed ref_sigma=%.3f.", fallback_sigma)
 
         window_results = Parallel(n_jobs=self._n_jobs)(
             delayed(self._process_window)(ts, train_data, full_data, ref_sigma_map[ts])
@@ -236,8 +246,11 @@ class WalkForwardRunner:
             logger.error("predict() failed for window %s: %s", label, exc)
             return None
 
-        # Build dynamic params with EMA sigma reference
-        dynamic_params = self._engine.build_dynamic_params(params, ref_sigma=ref_sigma)
+        # Build execution params
+        if self._use_dynamic_params:
+            dynamic_params = self._engine.build_dynamic_params(params, ref_sigma=ref_sigma)
+        else:
+            dynamic_params = self._engine.get_fixed_params()
 
         # Run backtest
         try:

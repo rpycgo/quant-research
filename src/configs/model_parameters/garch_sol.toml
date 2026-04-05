@@ -1,0 +1,12 @@
+# configs/model_parameters/garch_sol.toml
+#
+# Local override for the GARCH(1,1) benchmark model on SOLUSDT futures.
+
+[garch_settings]
+p    = 1
+q    = 1
+dist = "normal"
+
+[regime_signal]
+k_avg     = 0.45
+gamma_avg = 2.70

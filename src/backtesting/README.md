@@ -10,14 +10,17 @@ Supports multiple asset classes and pluggable model architectures through a clea
 
 ```
 backtesting/
+├── benchmarks/         BuyAndHoldBenchmark, StatisticalValidator
+├── cli/                qr-backtest, qr-buy-and-hold, qr-validate
 ├── core/               Abstract interfaces (BaseModel, BaseLoader, BaseEngine)
 │                       + 3-layer hierarchical config loader
 ├── assets/
 │   └── crypto/         CryptoLoader (Binance / local CSV) + CryptoPreprocessor
 ├── engines/            GenericBacktestEngine · WalkForwardRunner · PerformanceAnalyzer
 ├── models/
-│   ├── adapters/       HybridSdeCryptoAdapter · GarchCryptoAdapter
-│   └── registry.py     ModelRegistry factory
+│   ├── adapters/       mdrs_sde, garch, simple_breakout, ma_crossover,
+│   │                   rsi, hmm_regime, dl_regime
+│   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
 ```
 
@@ -25,39 +28,86 @@ backtesting/
 
 - **Model layer** owns all model-specific logic: signal generation, SNR scaling, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
 - **Engine layer** owns execution: TP / SL / trailing stop / ADX boost / time-out. It knows nothing about the model that generated the signals.
-- **Config layer** uses a 3-layer merge: package default → local override → shared infra. Only the keys that differ from the package default need to appear in the override file.
+- **Config layer** uses a 3-layer merge: package default → local override → shared infra.
+- **ModelEntry** metadata flags control pipeline branching per model:
+  - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
+  - `use_dynamic_params` — whether SNR-based TP/SL scaling is applied (MDRS-SDE only)
 
 ---
 
 ## Supported models
 
-| Model key | Asset | Package |
-|---|---|---|
-| `mdrs_sde_btc` | BTCUSDT | [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) |
-| `mdrs_sde_eth` | ETHUSDT | [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) |
-| `garch_btc` | BTCUSDT | built-in (`arch`) |
-| `garch_eth` | ETHUSDT | built-in (`arch`) |
+### Proposed model
+
+| Model key | Asset | Adapter | Notes |
+|---|---|---|---|
+| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, SNR scaling, EMA sigma |
+
+### Benchmark models
+
+| Model key | Asset | Adapter | Notes |
+|---|---|---|---|
+| `garch_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `GarchCryptoAdapter` | GARCH(1,1), fixed TP/SL |
+| `simple_breakout_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `SimpleBreakoutAdapter` | 288-period rolling high/low |
+| `ma_crossover_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MACrossoverAdapter` | EMA(12)/EMA(26) |
+| `rsi_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `RSIAdapter` | RSI(14), oversold 30 / overbought 70 |
+| `hmm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `HMMRegimeAdapter` | 2-state Gaussian HMM |
+| `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | LSTM |
+| `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | TCN |
+| `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | Transformer |
 
 ---
 
 ## Quick start
 
 ```bash
-# Install dependencies
-uv sync
-
 # Run MDRS-SDE walk-forward backtest
-python run_backtest.py --model mdrs_sde_btc --symbol BTCUSDT
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
 
-# Run GARCH benchmark
-python run_backtest.py --model garch_btc --symbol BTCUSDT
+# Run benchmark models
+qr-backtest --model garch_btc --symbol BTCUSDT
+qr-backtest --model simple_breakout_btc --symbol BTCUSDT
+qr-backtest --model ma_crossover_btc --symbol BTCUSDT
+qr-backtest --model rsi_btc --symbol BTCUSDT
+qr-backtest --model hmm_btc --symbol BTCUSDT
+qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
 
-# Override WFA date range
-python run_backtest.py --model mdrs_sde_btc --symbol BTCUSDT \
-    --start 2024-01-01 --end 2026-01-31
+# Buy-and-Hold
+qr-buy-and-hold --symbol BTCUSDT --start 2020-04-01 --end 2026-01-31
 
 # List all registered models
-python run_backtest.py --list-models
+qr-backtest --list-models
+```
+
+### Ablation study
+
+```bash
+# Full model
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
+
+# w/o EMA sigma reference
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma
+
+# w/o sticky filter
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
+
+# w/o ADX gate
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
+
+# Base model (all filters off)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma --no-sticky --no-adx
+```
+
+### Statistical validation
+
+```bash
+qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
+
+# Custom subperiods
+qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv \
+  --subperiod "Bull 2020,2020-04-01,2021-12-31" \
+  --subperiod "Bear 2022,2022-01-01,2023-12-31" \
+  --subperiod "Bull 2024,2024-01-01,2026-01-31"
 ```
 
 ---
@@ -67,18 +117,43 @@ python run_backtest.py --list-models
 ```
 configs/
 ├── backtest_settings.toml          Shared — execution costs, WFA schedule,
-│                                   trading parameters, risk management
+│                                   trading parameters, risk management, filters
 ├── data_settings.toml              Shared — data collection, preprocessing
 └── model_parameters/
-    ├── mdrs_sde_btc.toml           Local override for MDRS-SDE on BTC
-    └── garch_btc.toml              Local override for GARCH on BTC
+    ├── mdrs_sde_{btc,eth,sol,xrp}.toml
+    ├── garch_{btc,eth,sol,xrp}.toml
+    ├── simple_breakout_{btc,eth,sol,xrp}.toml
+    ├── ma_crossover_{btc,eth,sol,xrp}.toml
+    ├── rsi_{btc,eth,sol,xrp}.toml
+    ├── hmm_{btc,eth,sol,xrp}.toml
+    └── dl_regime_{lstm,tcn,transformer}_{btc,eth,sol,xrp}.toml
 ```
 
 ### 3-layer config resolution
 
-1. **Package default** — `default_config.toml` shipped inside the model package (e.g. `mdrs_sde/configs/default_config.toml`)
-2. **Local override** — `configs/model_parameters/<model_key>.toml` — only keys that differ from the default
+1. **Package default** — `default_config.toml` shipped inside the model package
+2. **Local override** — `configs/model_parameters/<model_key>.toml` — only differing keys
 3. **Shared infra** — `configs/backtest_settings.toml` and `configs/data_settings.toml`
+
+### Key settings
+
+```toml
+# backtest_settings.toml
+
+[filters]
+use_sticky         = true   # sticky breakout persistence filter (MDRS-SDE)
+use_adx            = true   # ADX gate (MDRS-SDE)
+use_ema_sigma      = true   # EMA sigma reference (MDRS-SDE only)
+only_selected_zone = false
+
+[walk_forward_settings]
+training_months = 3
+testing_months  = 1
+parallel_jobs   = 10
+start_date      = "2024-01-01"
+end_date        = "2026-01-31"
+ema_sigma_span  = 3
+```
 
 ---
 
@@ -109,49 +184,22 @@ class MyModelAdapter(BaseModel):
 **Step 3** — Register in `src/backtesting/models/registry.py`.
 
 ```python
-_REGISTRY: dict[str, type[BaseModel]] = {
+_REGISTRY: dict[str, ModelEntry] = {
     ...
-    "my_model_btc": MyModelAdapter,
+    "my_model_btc": ModelEntry(
+        MyModelAdapter,
+        requires_event_tagging=False,
+        use_dynamic_params=False,
+    ),
 }
 ```
 
-**Step 4** — Add the model package mapping in `src/backtesting/core/config_loader.py`.
-
-```python
-_MODEL_PACKAGE_MAP: dict[str, str] = {
-    ...
-    "my_model_btc": "my_model.configs",
-}
-```
-
-**Step 5** — Add a local override config (optional).
+**Step 4** — Add a local override config (optional).
 
 ```toml
 # configs/model_parameters/my_model_btc.toml
-# Only keys that differ from the package default
 [some_section]
 some_param = value
-```
-
----
-
-## Adding a new asset class
-
-Implement `BaseLoader` and `BasePreprocessor` in `src/backtesting/assets/<asset_class>/`.
-
-```python
-from backtesting.core.base_loader import BaseLoader
-
-class EquityLoader(BaseLoader):
-    def load(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        ...
-```
-
-Add the symbol to `configs/data_settings.toml`.
-
-```toml
-[binance_collection]
-supported_symbols = ["BTCUSDT", "ETHUSDT", "AAPL"]  # extend here
 ```
 
 ---
@@ -171,9 +219,18 @@ supported_symbols = ["BTCUSDT", "ETHUSDT", "AAPL"]  # extend here
 | T-statistic | One-sample t-test against zero mean PnL |
 | IC | Spearman rank IC across forward horizons |
 
+`StatisticalValidator` provides additional validation:
+
+| Method | Description |
+|---|---|
+| Bootstrap CI | 95% CI for Sharpe, Total Return, MDD via 10,000 resamples |
+| Permutation test | One-sided p-value against null Sharpe |
+| Subperiod analysis | Per-regime metrics across Bull/Bear/Recovery periods |
+
 ---
 
 ## Related repositories
 
 - [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) — MDRS-SDE model implementation
+- [dl-regime](https://github.com/rpycgo/dl-regime) — Deep learning regime detection
 - [mdrs-sde-theory](https://github.com/rpycgo/mdrs-sde-theory) — Theoretical foundations

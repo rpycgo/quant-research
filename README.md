@@ -13,6 +13,8 @@ Model libraries ([mdrs-sde](https://github.com/rpycgo-research/mdrs-sde), [dl-re
 | Module | Description | Status |
 |---|---|---|
 | [backtesting](src/backtesting/README.md) | Walk-forward backtesting framework | ✅ Available |
+| [data](src/data/README.md) | Historical OHLCV data collection | ✅ Available |
+| [strategies](src/strategies/README.md) | Model-specific CLI tools | ✅ Available |
 | [collector](src/collector/README.md) | Real-time market data collection via Binance WebSocket | ✅ Available |
 | [ingestor](src/ingestor/README.md) | Kafka consumer → TimescaleDB ingestion pipeline | ✅ Available |
 | dashboards | Grafana monitoring and visualization | ✅ Available |
@@ -23,19 +25,31 @@ Model libraries ([mdrs-sde](https://github.com/rpycgo-research/mdrs-sde), [dl-re
 quant-research/
 ├── src/
 │   ├── backtesting/              Walk-forward backtesting framework
-│   │   ├── cli/                  Installable CLI entry points
+│   │   ├── benchmarks/           BuyAndHoldBenchmark, StatisticalValidator
+│   │   ├── cli/                  qr-backtest, qr-buy-and-hold, qr-validate
 │   │   ├── core/                 Base classes and config loader
-│   │   ├── engines/              Backtest and walk-forward engines
-│   │   ├── models/               Model adapters and registry
-│   │   │   └── adapters/         mdrs_sde, dl_regime, garch
-│   │   ├── assets/               Asset-specific data loaders
-│   │   └── visualization/        Performance plotters
+│   │   ├── engines/              GenericBacktestEngine, WalkForwardRunner
+│   │   ├── models/
+│   │   │   ├── adapters/         mdrs_sde, garch, simple_breakout, ma_crossover,
+│   │   │   │                     rsi, hmm_regime, dl_regime
+│   │   │   └── registry.py       ModelRegistry with ModelEntry
+│   │   └── assets/crypto/        CryptoLoader, CryptoPreprocessor
+│   ├── data/
+│   │   └── cli/                  qr-data-collect
+│   ├── strategies/
+│   │   ├── mdrs_sde/cli/         qr-mdrs-event-detect
+│   │   └── dl_regime/cli/        qr-dl-train
 │   ├── collector/                Binance WebSocket → Kafka producer
 │   ├── ingestor/                 Kafka consumer → TimescaleDB
-│   ├── configs/                  Backtesting and data configuration
+│   ├── configs/
+│   │   ├── backtest_settings.toml
+│   │   ├── data_settings.toml
 │   │   └── model_parameters/     Per-model override configs
 │   └── utils/                    Shared config loader
-├── events/                       Detected breakout event files (DVC)
+├── data/
+│   ├── crypto/binance/futures/   OHLCV CSV files
+│   └── events/                   Detected breakout event files (DVC)
+├── results/                      Backtest trade results and params
 ├── dashboards/                   Grafana dashboard definitions
 ├── run_collector.py              Collector entry-point
 ├── run_ingestor.py               Ingestor entry-point
@@ -51,11 +65,12 @@ quant-research/
 - Python 3.12+
 - uv
 - Docker & Docker Compose
+- GPU recommended for DL model training (8GB VRAM minimum)
 
 ### Installation
 
 ```bash
-git clone https://github.com/rpycgo/quant-research.git
+git clone https://github.com/rpycgo-research/quant-research.git
 cd quant-research
 uv sync
 ```
@@ -78,48 +93,69 @@ python run_collector.py
 # Terminal 2 — ingestor (Kafka → TimescaleDB)
 python run_ingestor.py
 
-# Gap repair (run separately as needed)
+# Gap repair
 python run_backfill.py
 ```
 
-### Backtesting
+### Research pipeline
 
 ```bash
-# List all registered models
-qr-backtest --list-models
+# 1. Collect historical OHLCV
+qr-data-collect --symbol BTCUSDT --start 2020-01-01 --end 2026-01-31
 
-# Run backtest
+# 2. Detect breakout events (MDRS-SDE only)
+qr-mdrs-event-detect --symbol BTCUSDT --start 2020-01-01 --end 2025-12-31
+
+# 3. Train DL models (DL benchmarks only)
+qr-dl-train --model lstm --symbol BTCUSDT
+
+# 4. Run backtest
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
 
-# With date override
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
-    --start 2024-01-01 --end 2026-01-31
-
-# Other registered models
-qr-backtest --model garch_btc --symbol BTCUSDT
-qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
-qr-backtest --model dl_regime_tcn_btc --symbol BTCUSDT
-qr-backtest --model dl_regime_transformer_btc --symbol BTCUSDT
+# 5. Statistical validation
+qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 ```
+
+## CLI Reference
+
+| Command | Description |
+|---|---|
+| `qr-data-collect` | Fetch historical OHLCV from Binance Futures |
+| `qr-mdrs-event-detect` | Detect breakout events for MDRS-SDE training |
+| `qr-dl-train` | Train DL regime models (LSTM / TCN / Transformer) |
+| `qr-backtest` | Run walk-forward backtest for any registered model |
+| `qr-buy-and-hold` | Compute passive buy-and-hold benchmark metrics |
+| `qr-validate` | Bootstrap CI, Permutation test, Subperiod analysis |
 
 ## Registered Models
 
-| Model key | Adapter | Source |
+### Proposed model
+
+| Model key | Asset | Description |
 |---|---|---|
-| `mdrs_sde_btc` | `MdrsSdeCryptoAdapter` | [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) |
-| `mdrs_sde_eth` | `MdrsSdeCryptoAdapter` | [mdrs-sde](https://github.com/rpycgo-research/mdrs-sde) |
-| `garch_btc` | `GarchCryptoAdapter` | arch package |
-| `garch_eth` | `GarchCryptoAdapter` | arch package |
-| `dl_regime_lstm_btc` | `DlRegimeCryptoAdapter` | [dl-regime](https://github.com/rpycgo/dl-regime) |
-| `dl_regime_tcn_btc` | `DlRegimeCryptoAdapter` | [dl-regime](https://github.com/rpycgo/dl-regime) |
-| `dl_regime_transformer_btc` | `DlRegimeCryptoAdapter` | [dl-regime](https://github.com/rpycgo/dl-regime) |
+| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | MDRS-SDE with MCMC, SNR scaling, EMA sigma |
+
+### Benchmark models
+
+| Model key | Asset | Description |
+|---|---|---|
+| `garch_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | GARCH(1,1) volatility-based regime |
+| `simple_breakout_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | 288-period rolling high/low breakout |
+| `ma_crossover_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | EMA(12)/EMA(26) crossover |
+| `rsi_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | RSI(14) mean-reversion |
+| `hmm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | 2-state Gaussian HMM |
+| `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | LSTM regime detection |
+| `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | TCN regime detection |
+| `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | Transformer regime detection |
 
 ## Adding a New Model
 
 1. Implement an adapter in `src/backtesting/models/adapters/<name>.py` inheriting `BaseModel`
-2. Register it in `src/backtesting/models/registry.py`
+2. Add a `ModelEntry` to `src/backtesting/models/registry.py` with appropriate metadata flags
 3. Add `configs/model_parameters/<model_key>.toml` for local overrides
 4. If the model ships a `default_config.toml`, add it to `_MODEL_PACKAGE_MAP` in `config_loader.py`
+
+See [backtesting README](src/backtesting/README.md) for detailed instructions.
 
 ## Tech Stack
 

@@ -211,3 +211,8 @@ __marimo__/
 *.env.development
 *.env.production
 *.env.test
+
+# MLFlow
+mlruns/
+checkpoints/
+lightning_logs/

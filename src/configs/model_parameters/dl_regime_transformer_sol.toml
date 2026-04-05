@@ -1,0 +1,11 @@
+# configs/model_parameters/dl_regime_transformer_sol.toml
+#
+# Local override for the DL regime TRANSFORMER model on SOLUSDT futures.
+# Keys absent here fall back to dl_regime/configs/default_config.toml.
+
+[model]
+architecture   = "transformer"
+checkpoint_dir = "checkpoints"
+
+[training]
+seq_len = 288    # 24h look-back at 5m interval

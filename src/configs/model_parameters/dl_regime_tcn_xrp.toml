@@ -1,0 +1,11 @@
+# configs/model_parameters/dl_regime_tcn_xrp.toml
+#
+# Local override for the DL regime TCN model on XRPUSDT futures.
+# Keys absent here fall back to dl_regime/configs/default_config.toml.
+
+[model]
+architecture   = "tcn"
+checkpoint_dir = "checkpoints"
+
+[training]
+seq_len = 288    # 24h look-back at 5m interval

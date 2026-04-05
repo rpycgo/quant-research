@@ -24,6 +24,12 @@ Usage
 
     qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
 
+    # Ablation flags
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma --no-sticky --no-adx
+
     # List all registered models
     qr-backtest --list-models
 """
@@ -101,6 +107,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Python logging level.",
     )
+    # ------------------------------------------------------------------
+    # Ablation flags
+    # ------------------------------------------------------------------
+    parser.add_argument(
+        "--no-ema-sigma",
+        action="store_true",
+        help="Disable EMA sigma reference. Use fixed reference_sigma_1 from config.",
+    )
+    parser.add_argument(
+        "--no-sticky",
+        action="store_true",
+        help="Disable sticky filter.",
+    )
+    parser.add_argument(
+        "--no-adx",
+        action="store_true",
+        help="Disable ADX gate.",
+    )
+
     return parser
 
 
@@ -116,7 +141,7 @@ def _override_wfa_dates(
     wfa_config: dict[str, Any],
     start: str | None,
     end: str | None,
-) -> dict[str, Any]:
+    ) -> dict[str, Any]:
     cfg = wfa_config.copy()
     if start:
         cfg["start_date"] = start
@@ -130,7 +155,7 @@ def _save_results(
     param_summary: dict[str, dict[str, Any]],
     model_key: str,
     symbol: str,
-) -> None:
+    ) -> None:
     results_dir = _REPO_ROOT / "results"
     results_dir.mkdir(exist_ok=True)
 
@@ -181,12 +206,22 @@ def main() -> int:
         args.end,
     )
 
+    # Ablation: override filter_config from CLI flags
+    filter_cfg = bt_cfg.get("filters", {}).copy()
+    if args.no_ema_sigma:
+        filter_cfg["use_ema_sigma"] = False
+    if args.no_sticky:
+        filter_cfg["use_sticky"] = False
+    if args.no_adx:
+        filter_cfg["use_adx"] = False
+
     log.info(
-        "Run: model=%s | symbol=%s | %s → %s",
+        "Run: model=%s | symbol=%s | %s → %s | filters=%s",
         args.model,
         args.symbol,
         wfa_config["start_date"],
         wfa_config["end_date"],
+        filter_cfg,
     )
 
     # ------------------------------------------------------------------
@@ -229,12 +264,13 @@ def main() -> int:
         model=model,
         engine=engine,
         wfa_config=wfa_config,
+        filter_config=filter_cfg,
     )
 
     # ------------------------------------------------------------------
     # 4. Walk-forward analysis
     # ------------------------------------------------------------------
-    log.info("Starting walk-forward analysis …")
+    log.info("Starting walk-forward analysis ...")
     all_trades, param_summary = runner.run(full_data, train_data)
 
     if all_trades.empty:
@@ -259,6 +295,7 @@ def main() -> int:
     _save_results(all_trades, param_summary, args.model, args.symbol)
 
     log.info("Done.")
+
     return 0
 
 

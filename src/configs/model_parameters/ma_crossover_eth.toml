@@ -1,0 +1,5 @@
+# configs/model_parameters/ma_crossover_eth.toml
+
+[ma_settings]
+fast_period = 12
+slow_period = 26

@@ -1,0 +1,4 @@
+# configs/model_parameters/simple_breakout_eth.toml
+
+[breakout_settings]
+window = 288

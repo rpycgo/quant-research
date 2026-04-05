@@ -10,7 +10,7 @@ output_directory = "data/crypto/binance/futures"
 
 # Supported symbols — add new pairs here as loaders are implemented.
 # The CryptoLoader validates incoming symbol requests against this list.
-supported_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPSDT"]
+supported_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
 
 [event_detection]
 output_filename         = "data/events.toml"

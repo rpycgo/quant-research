@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+
 import numpy as np
 import pandas as pd
 
 from backtesting.core.base_engine import BaseEngine
-
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class GenericBacktestEngine(BaseEngine):
     """Model-agnostic trade-execution simulator.
 
     Args:
-        config: Parsed backtest-settings dictionary.  Must contain the
+        config: Parsed backtest-settings dictionary. Must contain the
             sections ``trading_parameters``, ``risk_management``,
             ``parameter_scaling``, and ``execution_costs`` as defined in
             ``configs/backtest_settings.toml``.
@@ -61,29 +61,24 @@ class GenericBacktestEngine(BaseEngine):
         ) -> pd.DataFrame:
         """Simulate trade execution over *price_data*.
 
-        Iterates bar-by-bar.  An entry is triggered when ``signal != 0``
-        and there is no open position.  Exits are evaluated on the *next*
+        Iterates bar-by-bar. An entry is triggered when ``signal != 0``
+        and there is no open position. Exits are evaluated on the *next*
         bar's ``High`` / ``Low`` / ``Close`` to avoid look-ahead bias.
 
         Args:
-            price_data: ``DataFrame`` with a ``DatetimeIndex`` and at minimum
-                the columns ``Open``, ``High``, ``Low``, ``Close``,
-                ``signal`` (``int``: 1 / -1 / 0), and ``confidence``
-                (``float``: 0–1).
-            dynamic_params: Execution parameters.  Expected keys:
-
-                * ``tp_long``              – take-profit ratio for longs.
-                * ``sl_long``              – stop-loss ratio for longs.
-                * ``tp_short``             – take-profit ratio for shorts.
-                * ``sl_short``             – stop-loss ratio for shorts.
-                * ``max_hold``             – maximum holding period (hours).
-                * ``trailing_start_long``  – trailing-stop activation ratio.
-                * ``trailing_start_short`` – trailing-stop activation ratio.
+            price_data:     ``DataFrame`` with a ``DatetimeIndex`` and at
+                            minimum ``Open``, ``High``, ``Low``, ``Close``,
+                            ``signal`` (int: 1 / -1 / 0), ``confidence``
+                            (float: 0-1).
+            dynamic_params: Execution parameters. Expected keys:
+                            ``tp_long``, ``sl_long``, ``tp_short``,
+                            ``sl_short``, ``max_hold``,
+                            ``trailing_start_long``, ``trailing_start_short``.
 
         Returns:
-            ``DataFrame`` of completed trades.  Empty if no trades were
-            triggered.  Contains columns: ``entry_time``, ``exit_time``,
-            ``type``, ``result``, ``PnL``, ``equity``, ``drawdown``.
+            ``DataFrame`` of completed trades. Empty if no trades were
+            triggered. Contains: ``entry_time``, ``exit_time``, ``type``,
+            ``result``, ``PnL``, ``equity``, ``drawdown``.
         """
         round_trip_cost = (
             self.execution_costs["commission_rate"]
@@ -114,7 +109,6 @@ class GenericBacktestEngine(BaseEngine):
 
                 entry_price = float(nxt["Open"])
 
-                # ADX boost
                 adx_val = float(curr.get("ADX", 0))
                 adx_thr = self.trading_parameters.get("adx_threshold", 30)
                 adx_boost_mult = self.scaling_parameters.get("adx_boost_threshold_multiplier", 1.2)
@@ -124,12 +118,11 @@ class GenericBacktestEngine(BaseEngine):
                 if adx_val > adx_thr * adx_boost_mult:
                     current_max_hold *= hold_boost_ratio
 
-                if signal == 1:  # Long
+                if signal == 1:
                     sl_price = min(
                         entry_price * (1.0 - dynamic_params["sl_long"]),
                         float(curr["dynamic_resistance"]),
                     )
-
                     active_position = {
                         "position_type": "Long",
                         "entry_price": entry_price,
@@ -144,12 +137,11 @@ class GenericBacktestEngine(BaseEngine):
                     }
                     is_in_position = True
 
-                elif signal == -1:  # Short
+                elif signal == -1:
                     sl_price = max(
                         entry_price * (1.0 + dynamic_params["sl_short"]),
                         float(curr["dynamic_support"]),
                     )
-
                     active_position = {
                         "position_type": "Short",
                         "entry_price": entry_price,
@@ -169,6 +161,7 @@ class GenericBacktestEngine(BaseEngine):
     def build_dynamic_params(
         self,
         estimated_params: dict[str, Any],
+        ref_sigma: float | None = None,
         ) -> dict[str, Any]:
         """Scale execution parameters by the model's SNR and volatility.
 
@@ -181,12 +174,16 @@ class GenericBacktestEngine(BaseEngine):
             estimated_params: Model parameter dict from ``BaseModel.fit``.
                 Expected keys: ``alpha_long``, ``alpha_short``, ``sigma_1``.
                 Falls back to config defaults when keys are absent.
+            ref_sigma: Per-window reference sigma computed from EMA of
+                preceding training slice volatility. When provided, overrides
+                the fixed ``reference_sigma_1`` value in config. Falls back
+                to config default when ``None``.
 
         Returns:
             Dictionary of scaled execution parameters compatible with
             :meth:`run_backtest`.
         """
-        ref_sigma = self.risk_parameters.get("reference_sigma_1", 14.665)
+        ref_sigma = ref_sigma or self.risk_parameters.get("reference_sigma_1", 14.665)
         sigma_1 = estimated_params.get("sigma_1", ref_sigma)
         vol_quality = sigma_1 / ref_sigma
 
@@ -240,12 +237,8 @@ class GenericBacktestEngine(BaseEngine):
         ) -> dict[str, Any] | None:
         """Check all exit conditions for the current open position.
 
-        Evaluates (in order): break-even migration, trailing-stop
-        activation, stop-loss hit, take-profit hit, and time-out.
-
         Args:
-            pos:      Active position dict (mutated in-place for stop
-                      adjustments).
+            pos:      Active position dict (mutated in-place for stop adjustments).
             nxt:      Next bar's OHLCV ``Series``.
             nxt_time: Timestamp of the next bar.
             cost:     Round-trip execution cost ratio.
@@ -261,12 +254,10 @@ class GenericBacktestEngine(BaseEngine):
         if pos_type == "Long":
             pos["hwm"] = max(pos["hwm"], float(nxt["High"]))
 
-            # Break-even migration
             be_ratio = risk["break_even_trigger_ratio_long"]
             if float(nxt["High"]) >= entry * (1.0 + pos["tp_target"] * be_ratio):
                 pos["sl_price"] = max(pos["sl_price"], entry * 1.0005)
 
-            # Trailing stop activation
             if pos["hwm"] >= entry * (1.0 + pos["trail_start"]):
                 pos["sl_price"] = max(
                     pos["sl_price"],
@@ -308,7 +299,6 @@ class GenericBacktestEngine(BaseEngine):
                     entry_time, nxt_time, "Short", "Win",
                 )
 
-        # Time-out check
         elapsed_hours = (nxt_time - entry_time).total_seconds() / 3600
         if elapsed_hours > pos["max_hold"]:
             pnl_raw = (
@@ -346,8 +336,8 @@ class GenericBacktestEngine(BaseEngine):
             trades: List of completed trade dicts.
 
         Returns:
-            Sorted ``DataFrame`` with ``equity`` and ``drawdown`` columns
-            appended.  Returns an empty ``DataFrame`` when no trades fired.
+            Sorted ``DataFrame`` with ``equity`` and ``drawdown`` columns.
+            Returns an empty ``DataFrame`` when no trades fired.
         """
         if not trades:
             return pd.DataFrame()

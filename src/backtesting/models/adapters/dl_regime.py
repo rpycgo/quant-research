@@ -165,36 +165,35 @@ class DlRegimeCryptoAdapter(BaseModel):
         model = params.get("model")
 
         if model is None:
-            df["signal"] = 0
-            df["confidence"] = 0.0
+            df["signal"]      = 0
+            df["confidence"]  = 0.0
             df["regime_prob"] = 0.5
             return df
 
-        # Step 1 — DL inference
-        regime_prob = self._run_inference(model, df)
-        df["regime_prob"] = regime_prob
-        df["confidence"] = regime_prob
+        # Step 1 — DL inference → (n, 3) softmax probs [flat, long, short]
+        class_probs = self._run_inference(model, df)
+        df["regime_prob"] = class_probs[:, 1]   # P(Long) for compatibility
+        df["confidence"]  = class_probs[:, 1:].max(axis=1)  # max(P(long), P(short))
 
-        # Step 2 — sticky filter
+        # Step 2 — directional signal from argmax (0=flat, 1=long, 2=short)
+        predicted_class = class_probs.argmax(axis=1)
+
+        # Step 3 — sticky filter on predicted class
         entry_thr = self._risk.get("entry_probability_threshold", 0.5)
-        min_dur = self._risk.get(
-            "minimum_signal_duration", _DEFAULT_MIN_DURATION
-        )
+        min_dur   = self._risk.get("minimum_signal_duration", _DEFAULT_MIN_DURATION)
         use_sticky = self._filters.get("use_sticky", True)
-        use_adx = self._filters.get("use_adx", True)
-        adx_thr = self._trade.get("adx_threshold", 30)
+        use_adx    = self._filters.get("use_adx", True)
+        adx_thr    = self._trade.get("adx_threshold", 30)
 
-        binary = (df["regime_prob"] > entry_thr).astype(int)
+        long_raw  = pd.Series((predicted_class == 1).astype(int), index=df.index)
+        short_raw = pd.Series((predicted_class == 2).astype(int), index=df.index)
+
         if use_sticky:
-            sticky = (
-                binary.rolling(window=min_dur).sum() == min_dur
-            ).astype(int)
+            long_sticky  = (long_raw.rolling(window=min_dur).sum()  == min_dur).astype(int)
+            short_sticky = (short_raw.rolling(window=min_dur).sum() == min_dur).astype(int)
         else:
-            sticky = binary
-
-        # Step 3 — direction gate
-        long_cond = df["Close"] > df["dynamic_resistance"]
-        short_cond = df["Close"] < df["dynamic_support"]
+            long_sticky  = long_raw
+            short_sticky = short_raw
 
         # Step 4 — ADX gate
         adx_pass = (
@@ -203,10 +202,10 @@ class DlRegimeCryptoAdapter(BaseModel):
             else pd.Series(True, index=df.index)
         )
 
-        # Step 5 — signal assembly
+        # Step 5 — signal assembly (no direction gate needed — model predicts direction)
         df["signal"] = 0
-        df.loc[sticky.astype(bool) & long_cond & adx_pass, "signal"] = 1
-        df.loc[sticky.astype(bool) & short_cond & adx_pass, "signal"] = -1
+        df.loc[long_sticky.astype(bool)  & adx_pass, "signal"] =  1
+        df.loc[short_sticky.astype(bool) & adx_pass, "signal"] = -1
 
         return df
 
@@ -245,46 +244,51 @@ class DlRegimeCryptoAdapter(BaseModel):
         model: Any,
         test_df: pd.DataFrame,
         ) -> np.ndarray:
-        """Run batched sliding-window inference, return regime_prob aligned to test_df.
+        """Run batched sliding-window inference, return class probs aligned to test_df.
 
         Builds all sliding windows at once as a single tensor and runs
-        inference in batches instead of one window at a time. This is
-        significantly faster than the naive loop approach.
+        inference in batches. Returns a (n, 3) array of softmax probabilities
+        for [flat, long, short].
         """
         valid_mask = test_df[self._features].notna().all(axis=1)
-        valid_df = test_df.loc[valid_mask, self._features]
+        valid_df   = test_df.loc[valid_mask, self._features]
 
         if len(valid_df) < self._seq_len:
             logger.warning(
                 "DlRegimeAdapter: insufficient valid rows (%d < seq_len=%d).",
                 len(valid_df), self._seq_len,
             )
-            return np.full(len(test_df), 0.5, dtype=np.float32)
+            flat = np.zeros((len(test_df), 3), dtype=np.float32)
+            flat[:, 0] = 1.0  # all flat
+
+            return flat
 
         # Scale features
         scaler = StandardScaler()
-        X = scaler.fit_transform(valid_df.values.astype(np.float32))
+        X      = scaler.fit_transform(valid_df.values.astype(np.float32))
 
-        # Build all sliding windows at once — shape: (n_windows, seq_len, n_features)
+        # Build all sliding windows — shape: (n_windows, seq_len, n_features)
         n_windows = len(X) - self._seq_len
         sequences = np.stack([X[i: i + self._seq_len] for i in range(n_windows)])
 
-        # Batched inference on CPU
-        probs: list[float] = []
+        # Batched inference on CPU — returns (n_windows, 3) softmax probs
+        all_probs: list[np.ndarray] = []
         model.eval()
         with torch.no_grad():
             for i in range(0, n_windows, self._batch_size):
-                batch = torch.from_numpy(sequences[i: i + self._batch_size])
-                out = model(batch)
-                probs.extend(out["regime_prob"].cpu().numpy().tolist())
+                batch  = torch.from_numpy(sequences[i: i + self._batch_size])
+                out    = model(batch)
+                probs  = torch.softmax(out["logits"], dim=-1)
+                all_probs.append(probs.cpu().numpy())
 
-        prob_array = np.array(probs, dtype=np.float32)
+        prob_array = np.concatenate(all_probs, axis=0)  # (n_windows, 3)
 
-        # Map back to original index
-        full_prob = np.full(len(test_df), 0.5, dtype=np.float32)
+        # Map back to original index — default flat (1, 0, 0)
+        full_probs = np.zeros((len(test_df), 3), dtype=np.float32)
+        full_probs[:, 0] = 1.0
         valid_indices = np.where(valid_mask.values)[0]
-        for i, p in enumerate(prob_array):
+        for i, probs in enumerate(prob_array):
             original_idx = valid_indices[i + self._seq_len]
-            full_prob[original_idx] = p
+            full_probs[original_idx] = probs
 
-        return full_prob
+        return full_probs

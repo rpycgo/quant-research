@@ -245,7 +245,12 @@ class DlRegimeCryptoAdapter(BaseModel):
         model: Any,
         test_df: pd.DataFrame,
         ) -> np.ndarray:
-        """Run sliding-window inference, return regime_prob aligned to test_df."""
+        """Run batched sliding-window inference, return regime_prob aligned to test_df.
+
+        Builds all sliding windows at once as a single tensor and runs
+        inference in batches instead of one window at a time. This is
+        significantly faster than the naive loop approach.
+        """
         valid_mask = test_df[self._features].notna().all(axis=1)
         valid_df = test_df.loc[valid_mask, self._features]
 
@@ -260,16 +265,18 @@ class DlRegimeCryptoAdapter(BaseModel):
         scaler = StandardScaler()
         X = scaler.fit_transform(valid_df.values.astype(np.float32))
 
-        # Sliding window inference
-        probs = []
+        # Build all sliding windows at once — shape: (n_windows, seq_len, n_features)
+        n_windows = len(X) - self._seq_len
+        sequences = np.stack([X[i: i + self._seq_len] for i in range(n_windows)])
+
+        # Batched inference on CPU
+        probs: list[float] = []
         model.eval()
         with torch.no_grad():
-            for i in range(len(X) - self._seq_len):
-                seq = torch.from_numpy(
-                    X[i: i + self._seq_len]
-                ).unsqueeze(0)
-                out = model(seq)
-                probs.append(float(out["regime_prob"].item()))
+            for i in range(0, n_windows, self._batch_size):
+                batch = torch.from_numpy(sequences[i: i + self._batch_size])
+                out = model(batch)
+                probs.extend(out["regime_prob"].cpu().numpy().tolist())
 
         prob_array = np.array(probs, dtype=np.float32)
 

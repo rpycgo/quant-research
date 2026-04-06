@@ -235,7 +235,7 @@ class DlRegimeCryptoAdapter(BaseModel):
             "transformer": TransformerRegimeModel,
         }[self._architecture]
 
-        model = model_cls.load_from_checkpoint(str(ckpt_path))
+        model = model_cls.load_from_checkpoint(str(ckpt_path), map_location="cpu")
         model.eval()
 
         return model

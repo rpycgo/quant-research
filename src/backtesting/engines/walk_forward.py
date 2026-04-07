@@ -80,10 +80,12 @@ class WalkForwardRunner:
                        ``backtest_settings.toml``. Controls ``use_ema_sigma``
                        and other filter toggles. Defaults to empty dict.
         use_dynamic_params: When ``True``, uses ``build_dynamic_params()``
-                       with SNR scaling and EMA sigma reference (MDRS-SDE).
-                       When ``False``, uses ``get_fixed_params()`` with
-                       config TP/SL values (all benchmark models).
+                       with SNR scaling and EMA sigma reference (MDRS-SDE only).
                        Default ``False``.
+        use_ema_sigma:  When ``True``, precomputes EMA sigma reference for
+                       all models and passes ref_sigma to get_fixed_params()
+                       for vol_quality SL adjustment. Independent of
+                       use_dynamic_params. Default ``True``.
 
     Example::
 
@@ -105,6 +107,7 @@ class WalkForwardRunner:
         wfa_config: dict[str, Any],
         filter_config: dict[str, Any] | None = None,
         use_dynamic_params: bool = False,
+        use_ema_sigma: bool = True,
         ) -> None:
         self._model = model
         self._engine = engine
@@ -115,9 +118,10 @@ class WalkForwardRunner:
         self._n_jobs = wfa_config.get("parallel_jobs", 1)
         self._ema_sigma_span = wfa_config.get("ema_sigma_span", 3)
         self._use_dynamic_params = use_dynamic_params
+        self._use_ema_sigma = use_ema_sigma
 
         filters = filter_config or {}
-        self._use_ema_sigma = filters.get("use_ema_sigma", True)
+        self._filter_use_ema_sigma = filters.get("use_ema_sigma", True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -161,9 +165,15 @@ class WalkForwardRunner:
             type(self._model).__name__,
         )
 
-        fallback_sigma = self._engine.risk_parameters.get("reference_sigma_1", 14.665)
+        # Fallback: first window uses train_data log_return std
+        if "log_return" in train_data.columns and len(train_data) > 10:
+            fallback_sigma = float(train_data["log_return"].std() * 100)
+        else:
+            fallback_sigma = self._engine.risk_parameters.get("reference_sigma_1", 14.665)
 
-        if self._use_dynamic_params and self._use_ema_sigma:
+        # EMA sigma is independent of use_dynamic_params
+        # Both flags (model-level use_ema_sigma AND filter use_ema_sigma) must be True
+        if self._use_ema_sigma and self._filter_use_ema_sigma:
             ref_sigma_map = self._precompute_sigma_reference(
                 train_data=train_data,
                 test_starts=test_starts,
@@ -173,10 +183,7 @@ class WalkForwardRunner:
             logger.info("EMA sigma reference enabled (span=%d).", self._ema_sigma_span)
         else:
             ref_sigma_map = {ts: fallback_sigma for ts in test_starts}
-            if not self._use_dynamic_params:
-                logger.info("Dynamic params disabled — using fixed config TP/SL.")
-            else:
-                logger.info("EMA sigma reference disabled — using fixed ref_sigma=%.3f.", fallback_sigma)
+            logger.info("EMA sigma reference disabled — using fixed ref_sigma=%.3f.", fallback_sigma)
 
         window_results = Parallel(n_jobs=self._n_jobs)(
             delayed(self._process_window)(ts, train_data, full_data, ref_sigma_map[ts])
@@ -250,7 +257,8 @@ class WalkForwardRunner:
         if self._use_dynamic_params:
             dynamic_params = self._engine.build_dynamic_params(params, ref_sigma=ref_sigma)
         else:
-            dynamic_params = self._engine.get_fixed_params()
+            # Pass ref_sigma for vol_quality SL adjustment even for benchmark models
+            dynamic_params = self._engine.get_fixed_params(ref_sigma=ref_sigma)
 
         # Run backtest
         try:
@@ -300,7 +308,8 @@ class WalkForwardRunner:
             slice_ = train_data.loc[train_start:train_end]
 
             if len(slice_) > 10 and "log_return" in slice_.columns:
-                raw_sigmas.append(float(slice_["log_return"].std() * 100))
+                sigma = float(slice_["log_return"].std() * 100)
+                raw_sigmas.append(sigma if sigma > 0 else fallback)
             else:
                 raw_sigmas.append(fallback)
 

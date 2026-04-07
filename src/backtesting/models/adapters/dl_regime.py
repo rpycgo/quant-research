@@ -170,30 +170,29 @@ class DlRegimeCryptoAdapter(BaseModel):
             df["regime_prob"] = 0.5
             return df
 
-        # Step 1 — DL inference → (n, 3) softmax probs [flat, long, short]
-        class_probs = self._run_inference(model, df)
-        df["regime_prob"] = class_probs[:, 1]   # P(Long) for compatibility
-        df["confidence"]  = class_probs[:, 1:].max(axis=1)  # max(P(long), P(short))
+        # Step 1 — DL inference → (n,) sigmoid regime_prob
+        regime_prob = self._run_inference(model, df)
+        df["regime_prob"] = regime_prob
+        df["confidence"]  = regime_prob
 
-        # Step 2 — directional signal from argmax (0=flat, 1=long, 2=short)
-        predicted_class = class_probs.argmax(axis=1)
-
-        # Step 3 — sticky filter on predicted class
-        entry_thr = self._risk.get("entry_probability_threshold", 0.5)
-        min_dur   = self._risk.get("minimum_signal_duration", _DEFAULT_MIN_DURATION)
+        # Step 2 — sticky filter (mirrors MDRS-SDE for fair comparison)
+        entry_thr  = self._risk.get("entry_probability_threshold", 0.5)
+        min_dur    = self._risk.get("minimum_signal_duration", _DEFAULT_MIN_DURATION)
         use_sticky = self._filters.get("use_sticky", True)
         use_adx    = self._filters.get("use_adx", True)
         adx_thr    = self._trade.get("adx_threshold", 30)
 
-        long_raw  = pd.Series((predicted_class == 1).astype(int), index=df.index)
-        short_raw = pd.Series((predicted_class == 2).astype(int), index=df.index)
-
+        binary = (df["regime_prob"] > entry_thr).astype(int)
         if use_sticky:
-            long_sticky  = (long_raw.rolling(window=min_dur).sum()  == min_dur).astype(int)
-            short_sticky = (short_raw.rolling(window=min_dur).sum() == min_dur).astype(int)
+            sticky = (
+                binary.rolling(window=min_dur).sum() == min_dur
+            ).astype(int)
         else:
-            long_sticky  = long_raw
-            short_sticky = short_raw
+            sticky = binary
+
+        # Step 3 — direction gate (identical to MDRS-SDE for fair comparison)
+        long_cond  = df["Close"] > df["dynamic_resistance"]
+        short_cond = df["Close"] < df["dynamic_support"]
 
         # Step 4 — ADX gate
         adx_pass = (
@@ -202,10 +201,10 @@ class DlRegimeCryptoAdapter(BaseModel):
             else pd.Series(True, index=df.index)
         )
 
-        # Step 5 — signal assembly (no direction gate needed — model predicts direction)
+        # Step 5 — signal assembly
         df["signal"] = 0
-        df.loc[long_sticky.astype(bool)  & adx_pass, "signal"] =  1
-        df.loc[short_sticky.astype(bool) & adx_pass, "signal"] = -1
+        df.loc[sticky.astype(bool) & long_cond  & adx_pass, "signal"] =  1
+        df.loc[sticky.astype(bool) & short_cond & adx_pass, "signal"] = -1
 
         return df
 
@@ -247,7 +246,7 @@ class DlRegimeCryptoAdapter(BaseModel):
         """Run batched sliding-window inference, return class probs aligned to test_df.
 
         Builds all sliding windows at once as a single tensor and runs
-        inference in batches. Returns a (n, 3) array of softmax probabilities
+        inference in batches. Returns a (n,) array of sigmoid probabilities
         for [flat, long, short].
         """
         valid_mask = test_df[self._features].notna().all(axis=1)
@@ -271,24 +270,22 @@ class DlRegimeCryptoAdapter(BaseModel):
         n_windows = len(X) - self._seq_len
         sequences = np.stack([X[i: i + self._seq_len] for i in range(n_windows)])
 
-        # Batched inference on CPU — returns (n_windows, 3) softmax probs
-        all_probs: list[np.ndarray] = []
+        # Batched inference on CPU — returns (n_windows,) sigmoid probs
+        probs: list[float] = []
         model.eval()
         with torch.no_grad():
             for i in range(0, n_windows, self._batch_size):
-                batch  = torch.from_numpy(sequences[i: i + self._batch_size])
-                out    = model(batch)
-                probs  = torch.softmax(out["logits"], dim=-1)
-                all_probs.append(probs.cpu().numpy())
+                batch = torch.from_numpy(sequences[i: i + self._batch_size])
+                out   = model(batch)
+                probs.extend(out["regime_prob"].cpu().numpy().tolist())
 
-        prob_array = np.concatenate(all_probs, axis=0)  # (n_windows, 3)
+        prob_array = np.array(probs, dtype=np.float32)  # (n_windows,)
 
-        # Map back to original index — default flat (1, 0, 0)
-        full_probs = np.zeros((len(test_df), 3), dtype=np.float32)
-        full_probs[:, 0] = 1.0
+        # Map back to original index — default 0.5
+        full_prob     = np.full(len(test_df), 0.5, dtype=np.float32)
         valid_indices = np.where(valid_mask.values)[0]
-        for i, probs in enumerate(prob_array):
+        for i, prob in enumerate(prob_array):
             original_idx = valid_indices[i + self._seq_len]
-            full_probs[original_idx] = probs
+            full_prob[original_idx] = prob
 
-        return full_probs
+        return full_prob

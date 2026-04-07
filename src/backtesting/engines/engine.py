@@ -224,27 +224,41 @@ class GenericBacktestEngine(BaseEngine):
             ),
         }
 
-    def get_fixed_params(self) -> dict[str, Any]:
-        """Return fixed execution parameters directly from config.
+    def get_fixed_params(self, ref_sigma: float | None = None) -> dict[str, Any]:
+        """Return fixed execution parameters from config with optional vol_quality adjustment.
 
         Used by benchmark models that do not produce MCMC posterior
         estimates (GARCH, Simple Breakout, MA Crossover, RSI, HMM, DL).
-        Bypasses SNR scaling and EMA sigma reference entirely, ensuring
-        all benchmark models run under identical execution conditions.
+        SNR scaling is bypassed entirely. When ``ref_sigma`` is provided,
+        a vol_quality factor is applied to SL and max_hold only, reflecting
+        current volatility regime without distorting TP.
+
+        When vol_quality = 1.0 (ref_sigma equals base_sigma or None),
+        returns identical values to the config defaults.
+
+        Args:
+            ref_sigma: EMA-smoothed per-window sigma from WalkForwardRunner.
+                       When ``None``, vol_quality defaults to 1.0 (no adjustment).
 
         Returns:
-            Dictionary of fixed execution parameters compatible with
+            Dictionary of execution parameters compatible with
             :meth:`run_backtest`.
         """
         tp    = self.trading_parameters
         scale = self.scaling_parameters
 
+        if ref_sigma is not None:
+            base_sigma  = float(self.risk_parameters.get("reference_sigma_1", ref_sigma))
+            vol_quality = ref_sigma / base_sigma if base_sigma > 0 else 1.0
+        else:
+            vol_quality = 1.0
+
         return {
             "tp_long":              tp["tp_long"],
-            "sl_long":              tp["sl_long"],
+            "sl_long":              tp["sl_long"]  * vol_quality,
             "tp_short":             tp["tp_short"],
-            "sl_short":             tp["sl_short"],
-            "max_hold":             tp["max_hold_hours"],
+            "sl_short":             tp["sl_short"] * vol_quality,
+            "max_hold":             tp["max_hold_hours"] * vol_quality,
             "trailing_start_long":  tp["trailing_stop_start_ratio"],
             "trailing_start_short": (
                 tp["trailing_stop_start_ratio"]

@@ -5,7 +5,7 @@
 
 [model]
 architecture   = "lstm"
-checkpoint_dir = "checkpoints"
+checkpoint_dir = "checkpoints/eth"
 
 [training]
 seq_len = 288    # 24h look-back at 5m interval

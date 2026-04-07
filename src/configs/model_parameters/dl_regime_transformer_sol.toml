@@ -5,7 +5,7 @@
 
 [model]
 architecture   = "transformer"
-checkpoint_dir = "checkpoints"
+checkpoint_dir = "checkpoints/sol"
 
 [training]
 seq_len = 288    # 24h look-back at 5m interval

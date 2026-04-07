@@ -142,6 +142,14 @@ def main() -> int:
 
     dl_cfg = _load_dl_config(args.model, args.dl_config_dir)
 
+    # Symbol-based path separation — model + symbol combination
+    # e.g. BTCUSDT → btc, ETHUSDT → eth
+    symbol_key = args.symbol.lower().replace("usdt", "")
+
+    dl_cfg.setdefault("mlflow", {})["experiment_name"]     = f"dl-regime-{args.model}-{symbol_key}"
+    dl_cfg.setdefault("checkpoint", {})["dirpath"]         = f"checkpoints/{symbol_key}"
+    dl_cfg.setdefault("trainer", {})["default_root_dir"]   = f"lightning_logs/{args.model}/{symbol_key}"
+
     # WFA date overrides
     wfa = dl_cfg.setdefault("walk_forward_settings", {})
     if args.start:

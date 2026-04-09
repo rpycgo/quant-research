@@ -109,16 +109,17 @@ class WalkForwardRunner:
         use_dynamic_params: bool = False,
         use_ema_sigma: bool = True,
         ) -> None:
-        self._model = model
-        self._engine = engine
-        self._start = pd.Timestamp(wfa_config["start_date"])
-        self._end = pd.Timestamp(wfa_config["end_date"])
-        self._train_months = wfa_config.get("training_months", 3)
-        self._test_months = wfa_config.get("testing_months", 1)
-        self._n_jobs = wfa_config.get("parallel_jobs", 1)
-        self._ema_sigma_span = wfa_config.get("ema_sigma_span", 3)
-        self._use_dynamic_params = use_dynamic_params
-        self._use_ema_sigma = use_ema_sigma
+        self._model                   = model
+        self._engine                  = engine
+        self._start                   = pd.Timestamp(wfa_config["start_date"])
+        self._end                     = pd.Timestamp(wfa_config["end_date"])
+        self._train_months            = wfa_config.get("training_months", 3)
+        self._test_months             = wfa_config.get("testing_months", 1)
+        self._n_jobs                  = wfa_config.get("parallel_jobs", 1)
+        self._ema_sigma_span          = wfa_config.get("ema_sigma_span", 3)
+        self._reference_window_months = wfa_config.get("reference_window_months", 12)
+        self._use_dynamic_params      = use_dynamic_params
+        self._use_ema_sigma           = use_ema_sigma
 
         filters = filter_config or {}
         self._filter_use_ema_sigma = filters.get("use_ema_sigma", True)
@@ -174,16 +175,19 @@ class WalkForwardRunner:
         # EMA sigma is independent of use_dynamic_params
         # Both flags (model-level use_ema_sigma AND filter use_ema_sigma) must be True
         if self._use_ema_sigma and self._filter_use_ema_sigma:
-            ref_sigma_map = self._precompute_sigma_reference(
+            ref_sigma_map = self._precompute_reference_sigma(
                 train_data=train_data,
                 test_starts=test_starts,
                 fallback=fallback_sigma,
-                ema_span=self._ema_sigma_span,
+                reference_window_months=self._reference_window_months,
             )
-            logger.info("EMA sigma reference enabled (span=%d).", self._ema_sigma_span)
+            logger.info(
+                "EMA sigma reference enabled — expanding up to %d months then rolling.",
+                self._reference_window_months,
+            )
         else:
             ref_sigma_map = {ts: fallback_sigma for ts in test_starts}
-            logger.info("EMA sigma reference disabled — using fixed ref_sigma=%.3f.", fallback_sigma)
+            logger.info("EMA sigma reference disabled — vol_quality=1.0 for all windows.")
 
         window_results = Parallel(n_jobs=self._n_jobs)(
             delayed(self._process_window)(ts, train_data, full_data, ref_sigma_map[ts])
@@ -257,8 +261,19 @@ class WalkForwardRunner:
         if self._use_dynamic_params:
             dynamic_params = self._engine.build_dynamic_params(params, ref_sigma=ref_sigma)
         else:
-            # Pass ref_sigma for vol_quality SL adjustment even for benchmark models
-            dynamic_params = self._engine.get_fixed_params(ref_sigma=ref_sigma)
+            # Compute vol_quality as ratio of current window sigma to reference sigma
+            # Both are log_return.std() * 100 — same scale, no reference_sigma_1 needed
+            train_end_   = test_start - pd.Timedelta(seconds=1)
+            train_start_ = train_end_ - relativedelta(months=self._train_months)
+            train_slice_ = train_data.loc[train_start_:train_end_]
+
+            if len(train_slice_) > 10 and "log_return" in train_slice_.columns:
+                window_sigma = float(train_slice_["log_return"].std() * 100)
+                vol_quality  = (window_sigma / ref_sigma) if ref_sigma > 0 else 1.0
+            else:
+                vol_quality = 1.0
+
+            dynamic_params = self._engine.get_fixed_params(vol_quality=vol_quality)
 
         # Run backtest
         try:
@@ -276,61 +291,71 @@ class WalkForwardRunner:
             signal_df=signal_df[signal_cols],
         )
 
-    def _precompute_sigma_reference(
+    def _precompute_reference_sigma(
         self,
         train_data: pd.DataFrame,
         test_starts: pd.DatetimeIndex,
         fallback: float,
-        ema_span: int = 3,
+        reference_window_months: int = 12,
         ) -> dict[pd.Timestamp, float]:
-        """Compute per-window reference_sigma_1 using EMA of rolling std.
+        """Compute per-window reference sigma using expanding then rolling window.
 
-        For each test window, computes the log_return std of the preceding
-        training slice (scaled to match sigma_1 units: x100), then applies
-        EMA smoothing across windows to reduce noise. The first window always
-        uses the config fallback value.
+        For each test window, the reference sigma is computed from all data
+        preceding the test start, up to a maximum of ``reference_window_months``.
+
+        * Expanding phase: when available data < reference_window_months,
+          use all available data (e.g. months 1-3, 1-6, 1-9, 1-12).
+        * Rolling phase: when available data >= reference_window_months,
+          use the most recent reference_window_months only.
+
+        This ensures:
+        - No look-ahead bias (always uses data before test_start)
+        - Stable reference as data accumulates
+        - Adapts to long-term volatility regime shifts
+
+        Both reference sigma and window sigma use the same scale
+        (log_return.std() * 100), so vol_quality is dimensionally consistent.
 
         Args:
-            train_data:  Full training-eligible dataset containing log_return.
-            test_starts: Ordered sequence of test window start timestamps.
-            fallback:    Config default reference_sigma_1 for the first window
-                         and when the training slice is too small.
-            ema_span:    EMA span for smoothing across windows (default: 3).
+            train_data:              Full training-eligible dataset.
+            test_starts:             Ordered sequence of test window start timestamps.
+            fallback:                Fallback sigma when insufficient data.
+            reference_window_months: Max lookback for reference sigma (default: 12).
 
         Returns:
-            Dict mapping each test_start timestamp to its ref_sigma value.
+            Dict mapping each test_start timestamp to its reference sigma.
         """
-        raw_sigmas: list[float] = []
+        ref_sigmas: dict[pd.Timestamp, float] = {}
 
         for ts in test_starts:
-            train_end = ts - pd.Timedelta(seconds=1)
-            train_start = train_end - relativedelta(months=self._train_months)
-            slice_ = train_data.loc[train_start:train_end]
+            ref_end      = ts - pd.Timedelta(seconds=1)
+            rolling_start = ref_end - relativedelta(months=reference_window_months)
+
+            # Try rolling window first (most recent reference_window_months)
+            # If not enough data (expanding phase), fall back to all available data
+            slice_ = train_data.loc[rolling_start:ref_end]
 
             if len(slice_) > 10 and "log_return" in slice_.columns:
+                # Rolling phase: sufficient data for full reference window
                 sigma = float(slice_["log_return"].std() * 100)
-                raw_sigmas.append(sigma if sigma > 0 else fallback)
             else:
-                raw_sigmas.append(fallback)
+                # Expanding phase: use all data available before test_start
+                slice_ = train_data.loc[:ref_end]
+                if len(slice_) > 10 and "log_return" in slice_.columns:
+                    sigma = float(slice_["log_return"].std() * 100)
+                else:
+                    sigma = fallback
 
-        smoothed = (
-            pd.Series(raw_sigmas)
-            .ewm(span=ema_span, adjust=False)
-            .mean()
-            .tolist()
-        )
-
-        # First window always uses config default
-        smoothed[0] = fallback
+            ref_sigmas[ts] = sigma if sigma > 0 else fallback
 
         logger.debug(
-            "EMA sigma reference — first: %.3f, last: %.3f, span: %d",
-            smoothed[0],
-            smoothed[-1],
-            ema_span,
+            "Reference sigma — first: %.4f, last: %.4f, window: %d months",
+            list(ref_sigmas.values())[0],
+            list(ref_sigmas.values())[-1],
+            reference_window_months,
         )
 
-        return dict(zip(test_starts, smoothed))
+        return ref_sigmas
 
     @staticmethod
     def _aggregate(

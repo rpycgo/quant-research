@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from backtesting.assets.crypto.funding_rate import FundingRateManager
 from backtesting.core.base_engine import BaseEngine
 
 logger = logging.getLogger(__name__)
@@ -44,11 +45,18 @@ class GenericBacktestEngine(BaseEngine):
         engine = GenericBacktestEngine(config=loader.get_backtest_settings())
         trades = engine.run_backtest(signal_df, dynamic_params)
     """
-    def __init__(self, config: dict[str, Any]) -> None:
-        self.trading_parameters = config["trading_parameters"]
-        self.risk_parameters = config["risk_management"]
-        self.scaling_parameters = config["parameter_scaling"]
-        self.execution_costs = config["execution_costs"]
+    def __init__(
+        self,
+        config: dict[str, Any],
+        funding_rate_manager: FundingRateManager | None = None,
+        symbol: str | None = None,
+        ) -> None:
+        self.trading_parameters  = config["trading_parameters"]
+        self.risk_parameters     = config["risk_management"]
+        self.scaling_parameters  = config["parameter_scaling"]
+        self.execution_costs     = config["execution_costs"]
+        self._funding_mgr        = funding_rate_manager
+        self._symbol             = symbol
 
     # ------------------------------------------------------------------
     # Public API
@@ -354,21 +362,30 @@ class GenericBacktestEngine(BaseEngine):
 
         return None
 
-    @staticmethod
     def _trade_record(
+        self,
         pnl: float,
         entry_time: pd.Timestamp,
         exit_time: pd.Timestamp,
         trade_type: str,
         result: str,
         ) -> dict[str, Any]:
+        funding_cost = 0.0
+        if self._funding_mgr is not None and self._symbol is not None:
+            funding_cost = self._funding_mgr.get_funding_cost(
+                symbol        = self._symbol,
+                entry_time    = entry_time,
+                exit_time     = exit_time,
+                position_type = trade_type,
+            )
 
         return {
-            "PnL": pnl,
-            "entry_time": entry_time,
-            "exit_time": exit_time,
-            "type": trade_type,
-            "result": result,
+            "PnL":          pnl - funding_cost,
+            "entry_time":   entry_time,
+            "exit_time":    exit_time,
+            "type":         trade_type,
+            "result":       result,
+            "funding_cost": round(funding_cost, 8),
         }
 
     @staticmethod

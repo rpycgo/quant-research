@@ -23,12 +23,13 @@ dependencies = [
 ]
 
 [project.scripts]
-qr-backtest            = "backtesting.cli.backtest:main"
-qr-buy-and-hold        = "backtesting.cli.buy_and_hold:main"
-qr-data-collect        = "data.cli.data_collect:main"
-qr-mdrs-event-detect   = "strategies.mdrs_sde.cli.event_detect:main"
-qr-dl-train            = "strategies.dl_regime.cli.train:main"
-qr-validate            = "backtesting.cli.validate:main"
+qr-backtest             = "backtesting.cli.backtest:main"
+qr-buy-and-hold         = "backtesting.cli.buy_and_hold:main"
+qr-data-collect         = "data.cli.data_collect:main"
+qr-collect-funding-rate = "data.cli.funding_rate_collect:main"
+qr-mdrs-event-detect    = "strategies.mdrs_sde.cli.event_detect:main"
+qr-dl-train             = "strategies.dl_regime.cli.train:main"
+qr-validate             = "backtesting.cli.validate:main"
 
 [build-system]
 requires = ["hatchling"]

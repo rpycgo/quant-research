@@ -232,21 +232,24 @@ class GenericBacktestEngine(BaseEngine):
             ),
         }
 
-    def get_fixed_params(self, ref_sigma: float | None = None) -> dict[str, Any]:
-        """Return fixed execution parameters from config with optional vol_quality adjustment.
+    def get_fixed_params(self, vol_quality: float = 1.0) -> dict[str, Any]:
+        """Return fixed execution parameters from config with vol_quality adjustment.
 
         Used by benchmark models that do not produce MCMC posterior
         estimates (GARCH, Simple Breakout, MA Crossover, RSI, HMM, DL).
-        SNR scaling is bypassed entirely. When ``ref_sigma`` is provided,
-        a vol_quality factor is applied to SL and max_hold only, reflecting
-        current volatility regime without distorting TP.
+        SNR scaling is bypassed entirely.
 
-        When vol_quality = 1.0 (ref_sigma equals base_sigma or None),
-        returns identical values to the config defaults.
+        ``vol_quality`` is computed upstream in WalkForwardRunner as
+        window_sigma / reference_sigma — both in log_return.std() * 100 scale,
+        so no unit conversion is needed.
+
+        When vol_quality = 1.0 (default), returns identical values to config.
 
         Args:
-            ref_sigma: EMA-smoothed per-window sigma from WalkForwardRunner.
-                       When ``None``, vol_quality defaults to 1.0 (no adjustment).
+            vol_quality: Ratio of current window sigma to reference sigma.
+                         > 1.0 widens SL (high volatility regime).
+                         < 1.0 narrows SL (low volatility regime).
+                         Defaults to 1.0 (no adjustment).
 
         Returns:
             Dictionary of execution parameters compatible with
@@ -254,12 +257,6 @@ class GenericBacktestEngine(BaseEngine):
         """
         tp    = self.trading_parameters
         scale = self.scaling_parameters
-
-        if ref_sigma is not None:
-            base_sigma  = float(self.risk_parameters.get("reference_sigma_1", ref_sigma))
-            vol_quality = ref_sigma / base_sigma if base_sigma > 0 else 1.0
-        else:
-            vol_quality = 1.0
 
         return {
             "tp_long":              tp["tp_long"],

@@ -698,8 +698,8 @@ wheels = [
 
 [[package]]
 name = "dl-regime"
-version = "0.1.3"
-source = { git = "https://github.com/rpycgo/dl-regime.git#54741c0a477470b244f520c1ca8e512230023d58" }
+version = "0.1.4"
+source = { git = "https://github.com/rpycgo/dl-regime.git#e13660decf1d5e44bd313d5b7908ac5b82e1bec3" }
 dependencies = [
     { name = "joblib" },
     { name = "lightning" },
@@ -3064,7 +3064,7 @@ wheels = [
 
 [[package]]
 name = "quant-research"
-version = "1.10.0"
+version = "1.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

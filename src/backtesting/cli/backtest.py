@@ -282,6 +282,7 @@ def main() -> int:
         wfa_config=wfa_config,
         filter_config=filter_cfg,
         use_dynamic_params=ModelRegistry.use_dynamic_params(args.model),
+        use_ema_sigma=ModelRegistry.use_ema_sigma(args.model),
     )
 
     # ------------------------------------------------------------------

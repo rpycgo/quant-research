@@ -5,7 +5,7 @@
 
 [model]
 architecture   = "lstm"
-checkpoint_dir = "checkpoints"
+checkpoint_dir = "checkpoints/btc"
 
 [training]
 seq_len                 = 288

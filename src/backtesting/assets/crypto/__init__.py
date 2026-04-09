@@ -11,9 +11,14 @@ CryptoLoader
 CryptoPreprocessor
     Computes generic crypto features (log-returns, Z-scores, ADX, Donchian
     channels) shared by every model adapter that targets crypto assets.
+FundingRateManager
+    Computes trade-level funding costs from pre-collected Binance funding
+    rate CSV data. Used by GenericBacktestEngine to deduct funding fees
+    from realized PnL.
 """
 
 from backtesting.assets.crypto.loader import CryptoLoader
 from backtesting.assets.crypto.preprocessor import CryptoPreprocessor
+from backtesting.assets.crypto.funding_rate import FundingRateManager
 
-__all__ = ["CryptoLoader", "CryptoPreprocessor"]
+__all__ = ["CryptoLoader", "CryptoPreprocessor", "FundingRateManager"]

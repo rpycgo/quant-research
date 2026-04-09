@@ -13,7 +13,7 @@ Model libraries ([mdrs-sde](https://github.com/rpycgo-research/mdrs-sde), [dl-re
 | Module | Description | Status |
 |---|---|---|
 | [backtesting](src/backtesting/README.md) | Walk-forward backtesting framework | ✅ Available |
-| [data](src/data/README.md) | Historical OHLCV data collection | ✅ Available |
+| [data](src/data/README.md) | Historical OHLCV and funding rate data collection | ✅ Available |
 | [strategies](src/strategies/README.md) | Model-specific CLI tools | ✅ Available |
 | [collector](src/collector/README.md) | Real-time market data collection via Binance WebSocket | ✅ Available |
 | [ingestor](src/ingestor/README.md) | Kafka consumer → TimescaleDB ingestion pipeline | ✅ Available |
@@ -35,7 +35,8 @@ quant-research/
 │   │   │   └── registry.py       ModelRegistry with ModelEntry
 │   │   └── assets/crypto/        CryptoLoader, CryptoPreprocessor
 │   ├── data/
-│   │   └── cli/                  qr-data-collect
+│   │   ├── cli/                  qr-data-collect, qr-collect-funding
+│   │   └── funding_rate/         FundingRateLoader
 │   ├── strategies/
 │   │   ├── mdrs_sde/cli/         qr-mdrs-event-detect
 │   │   └── dl_regime/cli/        qr-dl-train
@@ -48,6 +49,7 @@ quant-research/
 │   └── utils/                    Shared config loader
 ├── data/
 │   ├── crypto/binance/futures/   OHLCV CSV files
+│   ├── crypto/binance/funding_rate/  Funding rate CSV files
 │   └── events/                   Detected breakout event files (DVC)
 ├── results/                      Backtest trade results and params
 ├── dashboards/                   Grafana dashboard definitions
@@ -103,16 +105,19 @@ python run_backfill.py
 # 1. Collect historical OHLCV
 qr-data-collect --symbol BTCUSDT --start 2020-01-01 --end 2026-01-31
 
-# 2. Detect breakout events (MDRS-SDE only)
+# 2. Collect funding rate data
+qr-collect-funding-rate --symbol BTCUSDT
+
+# 3. Detect breakout events (MDRS-SDE only)
 qr-mdrs-event-detect --symbol BTCUSDT --start 2020-01-01 --end 2025-12-31
 
-# 3. Train DL models (DL benchmarks only)
+# 4. Train DL models (DL benchmarks only)
 qr-dl-train --model lstm --symbol BTCUSDT
 
-# 4. Run backtest
+# 5. Run backtest (funding costs automatically applied)
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
 
-# 5. Statistical validation
+# 6. Statistical validation
 qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 ```
 
@@ -121,6 +126,7 @@ qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 | Command | Description |
 |---|---|
 | `qr-data-collect` | Fetch historical OHLCV from Binance Futures |
+| `qr-collect-funding-rate` | Collect funding rate data from Binance Vision |
 | `qr-mdrs-event-detect` | Detect breakout events for MDRS-SDE training |
 | `qr-dl-train` | Train DL regime models (LSTM / TCN / Transformer) |
 | `qr-backtest` | Run walk-forward backtest for any registered model |

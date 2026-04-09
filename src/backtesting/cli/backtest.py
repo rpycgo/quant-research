@@ -52,7 +52,7 @@ from typing import Any
 
 import pandas as pd
 
-from backtesting.assets.crypto import CryptoLoader, CryptoPreprocessor
+from backtesting.assets.crypto import CryptoLoader, CryptoPreprocessor, FundingRateManager
 from backtesting.core.config_loader import BacktestConfigLoader
 from backtesting.engines import (
     GenericBacktestEngine,
@@ -131,6 +131,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--no-adx",
         action="store_true",
         help="Disable ADX gate.",
+    )
+    parser.add_argument(
+        "--no-funding",
+        action="store_true",
+        help="Disable funding rate deduction from PnL.",
     )
 
     return parser
@@ -275,7 +280,21 @@ def main() -> int:
     # 4. Model and engine construction
     # ------------------------------------------------------------------
     model  = ModelRegistry.get(args.model, loader)
-    engine = GenericBacktestEngine(config=bt_cfg)
+    funding_mgr = (
+        None
+        if args.no_funding
+        else FundingRateManager(project_root=_REPO_ROOT)
+    )
+    if args.no_funding:
+        log.info("Funding rate deduction disabled (--no-funding).")
+    else:
+        log.info("Funding rate deduction enabled.")
+
+    engine = GenericBacktestEngine(
+        config=bt_cfg,
+        funding_rate_manager=funding_mgr,
+        symbol=None if args.no_funding else args.symbol,
+    )
     runner = WalkForwardRunner(
         model=model,
         engine=engine,

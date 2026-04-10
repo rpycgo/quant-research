@@ -34,7 +34,6 @@ max_hold_hours            = 720
 adx_threshold             = 30
 
 [risk_management]
-reference_sigma_1              = 14.665
 minimum_signal_duration        = 5
 break_even_trigger_ratio_long  = 0.7
 break_even_trigger_ratio_short = 0.3

@@ -16,7 +16,7 @@ Responsibilities
 
 This adapter enables direct comparison of DL baselines against MDRS-SDE
 within the same WalkForwardRunner and GenericBacktestEngine, ensuring
-identical evaluation conditions for ESWA submission.
+identical evaluation conditions.
 
 External dependency
 -------------------
@@ -49,10 +49,8 @@ class DlRegimeCryptoAdapter(BaseModel):
     and generates trading signals using the same filtering logic as
     MDRS-SDE (sticky filter + ADX gate + direction gate).
 
-    DL models use **fixed** execution params (no SNR scaling) since
-    they lack MCMC posterior estimates.  The engine's
-    ``build_dynamic_params`` receives fallback values so that TP/SL/
-    trailing stop ratios come from the config defaults.
+    TP/SL/trailing stop ratios are read directly from
+    ``backtest_settings.toml`` via ``get_fixed_params()``.
 
     Args:
         model_config: Merged config dict from
@@ -126,17 +124,11 @@ class DlRegimeCryptoAdapter(BaseModel):
             self._architecture, window_label,
         )
 
-        # Return fallback SDE-like params so engine.build_dynamic_params
-        # produces reasonable fixed values
         return {
             "model": model,
             "checkpoint_path": str(ckpt_path),
             "window_label": window_label,
             "architecture": self._architecture,
-            # Fallback values for build_dynamic_params (no SNR scaling)
-            "alpha_long": 30.0,
-            "alpha_short": 20.0,
-            "sigma_1": self._risk.get("reference_sigma_1", 14.665),
         }
 
     def predict(

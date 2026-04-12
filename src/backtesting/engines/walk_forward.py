@@ -101,62 +101,78 @@ class WalkForwardRunner:
     # Public API
     # ------------------------------------------------------------------
 
-    def run(
+    def fit_all(
         self,
         full_data: pd.DataFrame,
-        train_data: pd.DataFrame | None = None,
-        ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
-        """Execute the full walk-forward analysis.
+        train_data: pd.DataFrame,
+        signals_path: str | Path,
+        ) -> Path:
+        """Run fit() + predict() for all windows and persist WindowResults.
+
+        Executes the expensive MCMC fit and signal generation for every
+        walk-forward window, then saves the resulting :class:`WindowResult`
+        list to *signals_path* as a pickle file.
+
+        This is the first step of the standard two-phase workflow:
+
+        1. ``fit_all()``             — fit + predict, persist signals
+        2. ``backtest_from_signals()`` — backtest only, repeat freely
+
+        The persisted ``.pkl`` file contains the full signal DataFrame
+        per window (OHLCV + signal + confidence + all feature columns),
+        enabling backtest replay without re-running MCMC.
 
         Args:
-            full_data:  Complete preprocessed ``DataFrame`` used for the
-                        testing windows.
-            train_data: Optional separate training-eligible subset (e.g.
-                        in-zone rows only for the SDE model). Falls back to
-                        *full_data* when ``None``.
+            full_data:    Full OHLCV + feature DataFrame (used for
+                          out-of-sample slicing).
+            train_data:   Training-eligible rows (pre-filtered by
+                          ``DatasetBuilder.slice_training_data()``).
+            signals_path: Destination path for the ``.pkl`` file.
 
         Returns:
-            A 2-tuple:
-
-            * ``all_trades``    — concatenated trades ``DataFrame`` sorted by
-              ``entry_time``.
-            * ``param_summary`` — dict mapping window labels to their
-              estimated model parameter dicts.
+            Resolved :class:`~pathlib.Path` of the saved pickle file.
         """
-        if train_data is None or train_data.empty:
-            train_data = full_data
-
+        if full_data.index.tz is not None:
+            full_data = full_data.copy()
+            full_data.index = full_data.index.tz_localize(None)
         if train_data.index.tz is not None:
+            train_data = train_data.copy()
             train_data.index = train_data.index.tz_localize(None)
 
         test_starts = pd.date_range(
             start=self._start, end=self._end, freq="MS"
         )
-        total = len(test_starts)
         logger.info(
-            "Starting walk-forward analysis: %d windows | model=%s",
-            total,
+            "fit_all: %d windows | model=%s",
+            len(test_starts),
             type(self._model).__name__,
         )
 
         window_results = Parallel(n_jobs=self._n_jobs)(
-            delayed(self._process_window)(test_start, train_data, full_data)
+            delayed(self._fit_window)(test_start, train_data, full_data)
             for test_start in test_starts
         )
 
-        return self._aggregate(window_results)
+        signals_path = Path(signals_path)
+        signals_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(signals_path, "wb") as fh:
+            pickle.dump(window_results, fh)
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
+        n_ok = sum(1 for r in window_results if r is not None)
+        logger.info("fit_all: saved %d/%d windows → %s", n_ok, len(test_starts), signals_path)
 
-    def _process_window(
+        return signals_path
+
+    def _fit_window(
         self,
         test_start: pd.Timestamp,
         train_data: pd.DataFrame,
         full_data: pd.DataFrame,
         ) -> WindowResult | None:
-        """Execute one walk-forward window.
+        """Run fit() + predict() only — no backtest.
+
+        Same as :meth:`_process_window` but skips ``run_backtest()``.
+        Used by :meth:`fit_all` to persist signals for later reuse.
 
         Args:
             test_start: First timestamp of the out-of-sample period.
@@ -164,20 +180,21 @@ class WalkForwardRunner:
             full_data:  Full dataset for the out-of-sample slice.
 
         Returns:
-            :class:`WindowResult` on success, ``None`` on irrecoverable error.
+            :class:`WindowResult` with empty ``trades`` on success,
+            ``None`` on irrecoverable error.
         """
         label = test_start.strftime("%Y-%m-%d")
 
-        train_end = test_start - pd.Timedelta(seconds=1)
-        train_start = train_end - relativedelta(months=self._train_months)
-        test_end = min(
+        train_end   = test_start - pd.Timedelta(seconds=1)
+        train_start = train_end  - relativedelta(months=self._train_months)
+        test_end    = min(
             test_start + relativedelta(months=self._test_months)
             - pd.Timedelta(seconds=1),
             self._end,
         )
 
         train_slice = train_data.loc[train_start:train_end].copy()
-        test_slice = full_data.loc[test_start:test_end].copy()
+        test_slice  = full_data.loc[test_start:test_end].copy()
 
         if len(train_slice) < 80:
             logger.warning(
@@ -207,19 +224,9 @@ class WalkForwardRunner:
             logger.error("predict() failed for window %s: %s", label, exc)
             return None
 
-        # Build execution params
-        params = self._engine.get_fixed_params()
-
-        # Run backtest
-        try:
-            trades = self._engine.run_backtest(signal_df, params)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("run_backtest() failed for window %s: %s", label, exc)
-            return None
-
         return WindowResult(
             window_label=label,
-            trades=trades,
+            trades=pd.DataFrame(),   # intentionally empty — backtest not run
             params=param_summary,
             signal_df=signal_df,
         )

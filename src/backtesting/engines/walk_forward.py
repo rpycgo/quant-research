@@ -24,6 +24,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+import pickle
+from pathlib import Path
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 from joblib import Parallel, delayed
@@ -42,8 +44,10 @@ class WindowResult:
         window_label: ISO date string identifying the test-window start.
         trades:       Completed trades ``DataFrame`` (may be empty).
         params:       Estimated model parameters for this window.
-        signal_df:    Subset of test data with ``signal`` and ``confidence``
-                      columns; used for IC analysis.
+        signal_df:    Full test-window DataFrame including ``signal``,
+                      ``confidence``, OHLCV and all feature columns.
+                      Stored in full so that ``backtest_from_signals()``
+                      can re-run ``run_backtest()`` without re-fitting.
     """
     window_label: str
     trades: pd.DataFrame
@@ -162,6 +166,56 @@ class WalkForwardRunner:
         logger.info("fit_all: saved %d/%d windows → %s", n_ok, len(test_starts), signals_path)
 
         return signals_path
+
+    def backtest_from_signals(
+        self,
+        signals_path: str | Path,
+        ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+        """Re-run backtest from persisted WindowResults (no re-fitting).
+
+        Loads the pickle file produced by :meth:`fit_all`, calls
+        ``get_fixed_params()`` and ``run_backtest()`` for every window,
+        and aggregates trades.  MCMC sampling and signal generation are
+        skipped entirely, making this suitable for rapid parameter
+        sensitivity experiments.
+
+        Args:
+            signals_path: Path to the ``.pkl`` file produced by
+                          :meth:`fit_all`.
+
+        Returns:
+            ``(all_trades, param_summary)`` — same shape as
+            :meth:`run`.
+        """
+        signals_path = Path(signals_path)
+        with open(signals_path, "rb") as fh:
+            window_results = pickle.load(fh)
+
+        logger.info(
+            "backtest_from_signals: loaded %d windows from %s",
+            len(window_results),
+            signals_path,
+        )
+
+        params = self._engine.get_fixed_params()
+
+        updated = []
+        for res in window_results:
+            if res is None:
+                updated.append(None)
+                continue
+            try:
+                trades = self._engine.run_backtest(res.signal_df, params)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "run_backtest() failed for window %s: %s",
+                    res.window_label, exc,
+                )
+                trades = pd.DataFrame()
+            from dataclasses import replace
+            updated.append(replace(res, trades=trades))
+
+        return self._aggregate(updated)
 
     def _fit_window(
         self,

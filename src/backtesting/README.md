@@ -26,12 +26,11 @@ backtesting/
 
 ### Design principles
 
-- **Model layer** owns all model-specific logic: signal generation, SNR scaling, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
-- **Engine layer** owns execution: TP / SL / trailing stop / ADX boost / time-out. It knows nothing about the model that generated the signals.
+- **Model layer** owns all model-specific logic: signal generation, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
+- **Engine layer** owns execution: TP / SL / trailing stop / time-out. It knows nothing about the model that generated the signals.
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
-  - `use_dynamic_params` — whether SNR-based TP/SL scaling is applied (MDRS-SDE only)
 
 ---
 
@@ -41,7 +40,7 @@ backtesting/
 
 | Model key | Asset | Adapter | Notes |
 |---|---|---|---|
-| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, SNR scaling, EMA sigma |
+| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, event-zone training |
 
 ### Benchmark models
 
@@ -73,20 +72,38 @@ qr-backtest --model hmm_btc --symbol BTCUSDT
 qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
 
 # Buy-and-Hold
-qr-buy-and-hold --symbol BTCUSDT --start 2020-04-01 --end 2026-01-31
+qr-buy-and-hold --symbol BTCUSDT --start 2024-01-01 --end 2025-12-31
 
 # List all registered models
 qr-backtest --list-models
 ```
+
+### Two-phase backtest (fit once, backtest many times)
+
+MCMC sampling is the bottleneck. Use the two-phase API to run fitting
+once and replay the backtest instantly whenever config changes.
+
+```bash
+# Phase 1 — fit + signal generation (MCMC, runs once, takes time)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --fit-only
+# → results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl
+
+# Phase 2 — backtest only (seconds, repeat freely)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
+    --from-signals results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl
+```
+
+The `.pkl` file contains per-window `WindowResult` objects with the full
+signal DataFrame (OHLCV + signal + confidence + all feature columns).
+Changing `tp_long`, `sl_long`, or any other execution parameter in
+`backtest_settings.toml` and re-running Phase 2 is sufficient — no
+re-fitting required.
 
 ### Ablation study
 
 ```bash
 # Full model
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
-
-# w/o EMA sigma reference
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma
 
 # w/o sticky filter
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
@@ -95,7 +112,7 @@ qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
 
 # Base model (all filters off)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma --no-sticky --no-adx
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky --no-adx
 ```
 
 ### Statistical validation
@@ -105,9 +122,8 @@ qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 
 # Custom subperiods
 qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv \
-  --subperiod "Bull 2020,2020-04-01,2021-12-31" \
-  --subperiod "Bear 2022,2022-01-01,2023-12-31" \
-  --subperiod "Bull 2024,2024-01-01,2026-01-31"
+  --subperiod "Bull 2024,2024-01-01,2024-12-31" \
+  --subperiod "Bull 2025,2025-01-01,2025-12-31"
 ```
 
 ---
@@ -141,18 +157,24 @@ configs/
 # backtest_settings.toml
 
 [filters]
-use_sticky         = true   # sticky breakout persistence filter (MDRS-SDE)
-use_adx            = true   # ADX gate (MDRS-SDE)
-use_ema_sigma      = true   # EMA sigma reference (MDRS-SDE only)
+use_sticky         = true   # sticky breakout persistence filter
+use_adx            = true   # ADX gate
 only_selected_zone = false
 
 [walk_forward_settings]
 training_months = 3
 testing_months  = 1
 parallel_jobs   = 10
-start_date      = "2024-01-01"
-end_date        = "2026-01-31"
-ema_sigma_span  = 3
+start_date      = "2020-04-01"
+end_date        = "2025-12-31"
+
+[trading_parameters]
+tp_long                   = 0.06
+sl_long                   = 0.03
+tp_short                  = 0.05
+sl_short                  = 0.025
+trailing_stop_start_ratio = 0.02
+max_hold_hours            = 720
 ```
 
 ---
@@ -189,7 +211,6 @@ _REGISTRY: dict[str, ModelEntry] = {
     "my_model_btc": ModelEntry(
         MyModelAdapter,
         requires_event_tagging=False,
-        use_dynamic_params=False,
     ),
 }
 ```
@@ -225,7 +246,7 @@ some_param = value
 |---|---|
 | Bootstrap CI | 95% CI for Sharpe, Total Return, MDD via 10,000 resamples |
 | Permutation test | One-sided p-value against null Sharpe |
-| Subperiod analysis | Per-regime metrics across Bull/Bear/Recovery periods |
+| Subperiod analysis | Per-regime metrics across user-defined periods |
 
 ---
 

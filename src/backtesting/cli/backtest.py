@@ -177,6 +177,7 @@ def _override_wfa_dates(
 
 
 def _save_results(
+    args: argparse.Namespace,
     trades: pd.DataFrame,
     param_summary: dict[str, pd.DataFrame],
     model_key: str,
@@ -195,9 +196,10 @@ def _save_results(
         trades.to_csv(trades_path, index=False)
         logging.getLogger(__name__).info("Trades saved → %s", trades_path)
 
-    with open(params_path, "wb") as fh:
-        pickle.dump(param_summary, fh)
-    logging.getLogger(__name__).info("Params saved  → %s", params_path)
+    if not args.from_signals:
+        with open(params_path, "wb") as fh:
+            pickle.dump(param_summary, fh)
+        logging.getLogger(__name__).info("Params saved → %s", params_path)
 
 
 def main() -> int:
@@ -327,7 +329,7 @@ def main() -> int:
             return 1
 
         log.info("Loading signals from %s ...", signals_path)
-        all_trades, param_summary = runner.backtest_from_signals(signals_path)
+        all_trades, param_summary = runner.backtest_from_signals(signals_path, bt_cfg)
 
     elif args.fit_only:
         # ── fit-only mode (no backtest) ─────────────────────────────
@@ -343,7 +345,7 @@ def main() -> int:
         # ── standard mode: fit + signals saved + backtest ───────────
         runner.fit_all(full_data, train_data, signals_path)
         log.info("Signals saved → %s", signals_path)
-        all_trades, param_summary = runner.backtest_from_signals(signals_path)
+        all_trades, param_summary = runner.backtest_from_signals(signals_path, bt_cfg)
 
     if all_trades.empty:
         log.warning("No trades were generated. Check signals and data coverage.")
@@ -364,7 +366,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 7. Persist results
     # ------------------------------------------------------------------
-    _save_results(all_trades, param_summary, args.model, args.symbol)
+    _save_results(args, all_trades, param_summary, args.model, args.symbol)
 
     log.info("Done.")
 

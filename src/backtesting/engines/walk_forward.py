@@ -170,6 +170,7 @@ class WalkForwardRunner:
     def backtest_from_signals(
         self,
         signals_path: str | Path,
+        bt_cfg: dict[str, Any],
         ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
         """Re-run backtest from persisted WindowResults (no re-fitting).
 
@@ -187,6 +188,8 @@ class WalkForwardRunner:
             ``(all_trades, param_summary)`` — same shape as
             :meth:`run`.
         """
+        wf_settings = bt_cfg['walk_forward_settings']
+
         signals_path = Path(signals_path)
         with open(signals_path, "rb") as fh:
             window_results = pickle.load(fh)
@@ -196,11 +199,18 @@ class WalkForwardRunner:
             len(window_results),
             signals_path,
         )
+        logger.info(
+            "backtesting dates: %s ~ %s",
+            wf_settings['start_date'],
+            wf_settings['end_date'],
+        )
 
         params = self._engine.get_fixed_params()
 
         updated = []
         for res in window_results:
+            if not (wf_settings['start_date'] <= res.window_label <= wf_settings['end_date']):
+                continue
             if res is None:
                 updated.append(None)
                 continue

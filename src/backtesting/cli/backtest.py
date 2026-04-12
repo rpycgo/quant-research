@@ -50,6 +50,7 @@ import sys
 from datetime import datetime
 from typing import Any
 
+from pathlib import Path
 import pandas as pd
 
 from backtesting.assets.crypto import CryptoLoader, CryptoPreprocessor, FundingRateManager
@@ -132,6 +133,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable funding rate deduction from PnL.",
     )
+    parser.add_argument(
+        "--fit-only",
+        action="store_true",
+        help=(
+            "Run fit() + predict() for all windows and save signals to "
+            "results/<stem>_signals.pkl. Skip backtest execution. "
+            "Use --from-signals to run backtest later."
+        ),
+    )
+    parser.add_argument(
+        "--from-signals",
+        metavar="SIGNALS_PKL",
+        default=None,
+        help=(
+            "Path to a signals .pkl file produced by --fit-only. "
+            "Skips MCMC and runs backtest only using persisted signals."
+        ),
+    )
 
     return parser
 
@@ -158,6 +177,7 @@ def _override_wfa_dates(
 
 
 def _save_results(
+    args: argparse.Namespace,
     trades: pd.DataFrame,
     param_summary: dict[str, pd.DataFrame],
     model_key: str,
@@ -176,9 +196,10 @@ def _save_results(
         trades.to_csv(trades_path, index=False)
         logging.getLogger(__name__).info("Trades saved → %s", trades_path)
 
-    with open(params_path, "wb") as fh:
-        pickle.dump(param_summary, fh)
-    logging.getLogger(__name__).info("Params saved  → %s", params_path)
+    if not args.from_signals:
+        with open(params_path, "wb") as fh:
+            pickle.dump(param_summary, fh)
+        logging.getLogger(__name__).info("Params saved → %s", params_path)
 
 
 def main() -> int:
@@ -297,7 +318,34 @@ def main() -> int:
     # 5. Walk-forward analysis
     # ------------------------------------------------------------------
     log.info("Starting walk-forward analysis ...")
-    all_trades, param_summary = runner.run(full_data, train_data)
+    stem = f"{args.model}_{args.symbol.lower()}_{pd.Timestamp.now():%Y%m%d_%H%M%S}"
+    signals_path = _REPO_ROOT / "results" / f"{stem}_signals.pkl"
+
+    if args.from_signals:
+        # ── backtest-only mode ──────────────────────────────────────
+        signals_path = Path(args.from_signals)
+        if not signals_path.exists():
+            log.error("Signals file not found: %s", signals_path)
+            return 1
+
+        log.info("Loading signals from %s ...", signals_path)
+        all_trades, param_summary = runner.backtest_from_signals(signals_path, bt_cfg)
+
+    elif args.fit_only:
+        # ── fit-only mode (no backtest) ─────────────────────────────
+        runner.fit_all(full_data, train_data, signals_path)
+        log.info("Signals saved → %s", signals_path)
+        log.info("Run backtest with:")
+        log.info("  qr-backtest --model %s --symbol %s --from-signals %s",
+                 args.model, args.symbol, signals_path)
+
+        return 0
+
+    else:
+        # ── standard mode: fit + signals saved + backtest ───────────
+        runner.fit_all(full_data, train_data, signals_path)
+        log.info("Signals saved → %s", signals_path)
+        all_trades, param_summary = runner.backtest_from_signals(signals_path, bt_cfg)
 
     if all_trades.empty:
         log.warning("No trades were generated. Check signals and data coverage.")
@@ -318,7 +366,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 7. Persist results
     # ------------------------------------------------------------------
-    _save_results(all_trades, param_summary, args.model, args.symbol)
+    _save_results(args, all_trades, param_summary, args.model, args.symbol)
 
     log.info("Done.")
 

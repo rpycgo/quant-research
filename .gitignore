@@ -216,3 +216,6 @@ __marimo__/
 mlruns/
 checkpoints/
 lightning_logs/
+
+# Results
+results/

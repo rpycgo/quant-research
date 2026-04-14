@@ -189,18 +189,20 @@ class WalkForwardRunner:
 
         # Fit
         try:
-            params = self._model.fit(train_slice)
+            training_results = self._model.fit(train_slice)
+            param_summary = training_results['summary']
+            mean_params = training_results['estimates']
         except Exception as exc:  # noqa: BLE001
             logger.error("fit() failed for window %s: %s", label, exc)
             return None
 
-        if not params:
+        if param_summary.empty:
             logger.warning("Window %s: fit() returned empty params.", label)
             return None
 
         # Predict
         try:
-            signal_df = self._model.predict(test_slice, params)
+            signal_df = self._model.predict(test_slice, mean_params)
         except Exception as exc:  # noqa: BLE001
             logger.error("predict() failed for window %s: %s", label, exc)
             return None
@@ -236,7 +238,7 @@ class WalkForwardRunner:
             ``(all_trades_df, param_summary_dict)``
         """
         trade_frames: list[pd.DataFrame] = []
-        param_summary: dict[str, dict[str, Any]] = {}
+        param_summary: dict[str, pd.DataFrame] = {}
 
         for res in results:
             if res is None:

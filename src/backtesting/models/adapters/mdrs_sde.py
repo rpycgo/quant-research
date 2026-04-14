@@ -132,7 +132,11 @@ class MdrsSdeCryptoAdapter(BaseModel):
             )
             return {}
 
-        return estimates
+        return {
+            'trace': _trace,
+            'summary': _summary,
+            'estimates': estimates,
+        }
 
     def predict(
         self,

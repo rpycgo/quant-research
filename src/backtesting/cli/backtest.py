@@ -43,7 +43,7 @@ Usage
 from __future__ import annotations
 
 import argparse
-import json
+import pickle
 import logging
 import pathlib
 import sys
@@ -159,7 +159,7 @@ def _override_wfa_dates(
 
 def _save_results(
     trades: pd.DataFrame,
-    param_summary: dict[str, dict[str, Any]],
+    param_summary: dict[str, pd.DataFrame],
     model_key: str,
     symbol: str,
     ) -> None:
@@ -170,18 +170,14 @@ def _save_results(
     stem = f"{model_key}_{symbol.lower()}_{timestamp}"
 
     trades_path = results_dir / f"{stem}_trades.csv"
-    params_path = results_dir / f"{stem}_params.json"
+    params_path = results_dir / f"{stem}_params.pkl"
 
     if not trades.empty:
         trades.to_csv(trades_path, index=False)
         logging.getLogger(__name__).info("Trades saved → %s", trades_path)
 
-    with open(params_path, "w", encoding="utf-8") as fh:
-        serialisable = {
-            w: {k: v for k, v in p.items() if isinstance(v, (int, float, str))}
-            for w, p in param_summary.items()
-        }
-        json.dump(serialisable, fh, indent=2)
+    with open(params_path, "wb") as fh:
+        pickle.dump(param_summary, fh)
     logging.getLogger(__name__).info("Params saved  → %s", params_path)
 
 

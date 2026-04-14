@@ -129,7 +129,7 @@ class GenericBacktestEngine(BaseEngine):
                         "tp_target": dynamic_params["tp_long"],
                         "sl_target": dynamic_params["sl_long"],
                         "trail_start": dynamic_params["trailing_start_long"],
-                        "max_hold": current_max_hold,
+                        "max_hold": self.trading_parameters.get("max_hold_hours", 720),
                     }
                     is_in_position = True
 
@@ -145,7 +145,7 @@ class GenericBacktestEngine(BaseEngine):
                         "tp_target": dynamic_params["tp_short"],
                         "sl_target": dynamic_params["sl_short"],
                         "trail_start": dynamic_params["trailing_start_short"],
-                        "max_hold": current_max_hold,
+                        "max_hold": self.trading_parameters.get("max_hold_hours", 720),
                     }
                     is_in_position = True
 

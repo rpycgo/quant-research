@@ -30,7 +30,7 @@ sl_long                   = 0.04
 tp_short                  = 0.06
 sl_short                  = 0.04
 trailing_stop_start_ratio = 0.03
-max_hold_hours            = 48
+max_hold_hours            = 720
 adx_threshold             = 30
 
 [risk_management]
@@ -43,10 +43,7 @@ entry_probability_threshold    = 0.5
 [parameter_scaling]
 snr_divisor                    = 2.0
 sl_short_numerator             = 1.2
-min_hold_hours                 = 18.0
 short_trailing_multiplier      = 0.8
-adx_boost_threshold_multiplier = 1.2
-max_hold_boost_ratio           = 1.5
 tp_long_clip                   = [0.85, 1.4]
 sl_long_clip                   = [0.75, 1.0]
 tp_short_clip                  = [0.6,  1.3]

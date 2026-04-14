@@ -118,11 +118,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # Ablation flags
     # ------------------------------------------------------------------
     parser.add_argument(
-        "--no-ema-sigma",
-        action="store_true",
-        help="Disable EMA sigma reference. Use fixed reference_sigma_1 from config.",
-    )
-    parser.add_argument(
         "--no-sticky",
         action="store_true",
         help="Disable sticky filter.",
@@ -220,8 +215,6 @@ def main() -> int:
 
     # Ablation: override filter_config from CLI flags
     filter_cfg = bt_cfg.get("filters", {}).copy()
-    if args.no_ema_sigma:
-        filter_cfg["use_ema_sigma"] = False
     if args.no_sticky:
         filter_cfg["use_sticky"] = False
     if args.no_adx:
@@ -300,8 +293,6 @@ def main() -> int:
         engine=engine,
         wfa_config=wfa_config,
         filter_config=filter_cfg,
-        use_dynamic_params=ModelRegistry.use_dynamic_params(args.model),
-        use_ema_sigma=ModelRegistry.use_ema_sigma(args.model),
     )
 
     # ------------------------------------------------------------------

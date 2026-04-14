@@ -39,12 +39,3 @@ minimum_signal_duration        = 5
 break_even_trigger_ratio_long  = 0.7
 break_even_trigger_ratio_short = 0.3
 entry_probability_threshold    = 0.5
-
-[parameter_scaling]
-snr_divisor                    = 2.0
-sl_short_numerator             = 1.2
-short_trailing_multiplier      = 0.8
-tp_long_clip                   = [0.85, 1.4]
-sl_long_clip                   = [0.75, 1.0]
-tp_short_clip                  = [0.6,  1.3]
-sl_short_clip                  = [0.5,  0.9]

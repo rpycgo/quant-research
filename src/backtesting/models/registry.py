@@ -23,22 +23,6 @@ Metadata flags
 
     When ``False``, ``train_data`` is set to ``full_data`` directly,
     skipping the DatasetBuilder pipeline entirely.
-
-``use_ema_sigma`` (bool, default ``True``)
-    When ``True``, all models receive EMA-smoothed vol_quality for
-    SL/max_hold adjustment via ``get_fixed_params(ref_sigma)``. When
-    ``False``, fixed config values are used without adjustment.
-
-``use_dynamic_params`` (bool, default ``False``)
-    When ``True``, ``WalkForwardRunner`` uses ``build_dynamic_params()``
-    to scale TP/SL/trailing via SNR and EMA sigma reference. Exclusive
-    to MDRS-SDE which produces ``alpha_long``, ``alpha_short``,
-    ``sigma_1`` from MCMC.
-
-    When ``False``, ``WalkForwardRunner`` uses ``get_fixed_params()``
-    which returns config TP/SL values directly. All benchmark models
-    use this path to ensure fair comparison under identical execution
-    conditions.
 """
 from __future__ import annotations
 
@@ -67,19 +51,9 @@ class ModelEntry:
         requires_event_tagging: When ``True``, backtest.py runs the full
                                 DatasetBuilder pipeline (event tagging +
                                 zone-filtered train_data). Default ``False``.
-        use_dynamic_params:     When ``True``, WalkForwardRunner uses
-                                build_dynamic_params() with SNR scaling and
-                                EMA sigma reference (MDRS-SDE only).
-                                Default ``False``.
-        use_ema_sigma:          When ``True``, WalkForwardRunner precomputes
-                                EMA sigma reference and passes vol_quality to
-                                get_fixed_params() for SL/max_hold adjustment.
-                                Applicable to all models. Default ``True``.
     """
     adapter_cls:            type[BaseModel]
     requires_event_tagging: bool = field(default=False)
-    use_dynamic_params:     bool = field(default=False)
-    use_ema_sigma:          bool = field(default=True)
 
 
 # ---------------------------------------------------------------------------
@@ -89,17 +63,13 @@ _REGISTRY: dict[str, ModelEntry] = {
     # MDRS-SDE — requires event tagging for zone-based MCMC training
     #            uses dynamic params (SNR scaling + EMA sigma reference)
     "mdrs_sde_btc":              ModelEntry(MdrsSdeCryptoAdapter,
-                                            requires_event_tagging=True,
-                                            use_dynamic_params=True),
+                                            requires_event_tagging=True),
     "mdrs_sde_eth":              ModelEntry(MdrsSdeCryptoAdapter,
-                                            requires_event_tagging=True,
-                                            use_dynamic_params=True),
+                                            requires_event_tagging=True),
     "mdrs_sde_sol":              ModelEntry(MdrsSdeCryptoAdapter,
-                                            requires_event_tagging=True,
-                                            use_dynamic_params=True),
+                                            requires_event_tagging=True),
     "mdrs_sde_xrp":              ModelEntry(MdrsSdeCryptoAdapter,
-                                            requires_event_tagging=True,
-                                            use_dynamic_params=True),
+                                            requires_event_tagging=True),
     # GARCH
     "garch_btc":                 ModelEntry(GarchCryptoAdapter),
     "garch_eth":                 ModelEntry(GarchCryptoAdapter),
@@ -223,53 +193,6 @@ class ModelRegistry:
         return entry.requires_event_tagging
 
     @staticmethod
-    def use_dynamic_params(model_key: str) -> bool:
-        """Return whether this model uses dynamic TP/SL parameter scaling.
-
-        Args:
-            model_key: Registered model identifier.
-
-        Returns:
-            ``True`` if the model uses SNR-based dynamic params and EMA
-            sigma reference (MDRS-SDE only). ``False`` for all benchmark
-            models which use fixed config TP/SL values.
-
-        Raises:
-            KeyError: If *model_key* is not in :data:`_REGISTRY`.
-        """
-        entry = _REGISTRY.get(model_key)
-        if entry is None:
-            raise KeyError(
-                f"Unknown model key '{model_key}'. "
-                f"Available keys: {ModelRegistry.available()}"
-            )
-
-        return entry.use_dynamic_params
-
-    @staticmethod
-    def use_ema_sigma(model_key: str) -> bool:
-        """Return whether this model uses EMA sigma for vol_quality adjustment.
-
-        Args:
-            model_key: Registered model identifier.
-
-        Returns:
-            ``True`` for all models by default. ``False`` only when
-            explicitly disabled in the registry entry.
-
-        Raises:
-            KeyError: If *model_key* is not in :data:`_REGISTRY`.
-        """
-        entry = _REGISTRY.get(model_key)
-        if entry is None:
-            raise KeyError(
-                f"Unknown model key '{model_key}'. "
-                f"Available keys: {ModelRegistry.available()}"
-            )
-
-        return entry.use_ema_sigma
-
-    @staticmethod
     def available() -> list[str]:
         """Return a sorted list of all registered model keys.
 
@@ -284,8 +207,6 @@ class ModelRegistry:
         adapter_cls: type[BaseModel],
         *,
         requires_event_tagging: bool = False,
-        use_dynamic_params: bool = False,
-        use_ema_sigma: bool = True,
         overwrite: bool = False,
         ) -> None:
         """Programmatically register a new adapter at runtime.
@@ -294,8 +215,6 @@ class ModelRegistry:
             model_key:              Unique string key for this model.
             adapter_cls:            Adapter class subclassing BaseModel.
             requires_event_tagging: Whether this model needs event tagging.
-            use_dynamic_params:     Whether this model uses SNR-based dynamic
-                                    TP/SL scaling and EMA sigma reference.
             overwrite:              When ``True``, replace existing key silently.
 
         Raises:
@@ -310,8 +229,6 @@ class ModelRegistry:
         _REGISTRY[model_key] = ModelEntry(
             adapter_cls=adapter_cls,
             requires_event_tagging=requires_event_tagging,
-            use_dynamic_params=use_dynamic_params,
-            use_ema_sigma=use_ema_sigma,
         )
         logger.info(
             "ModelRegistry: registered '%s' -> %s",

@@ -14,15 +14,13 @@ historical OHLCV prices.  The engine implements:
 * Round-trip execution cost deduction (commission + slippage).
 
 All model-specific logic — regime detection, ADX filtering, zone selection,
-SNR scaling — must be handled by the model adapter *before* calling this
-engine.  The engine is intentionally agnostic to the source of ``signal``.
+— must be handled by the model adapter *before* calling this engine.
+The engine is intentionally agnostic to the source of ``signal``.
 """
 from __future__ import annotations
 
 import logging
 from typing import Any
-
-import numpy as np
 import pandas as pd
 
 from backtesting.assets.crypto.funding_rate import FundingRateManager
@@ -37,8 +35,7 @@ class GenericBacktestEngine(BaseEngine):
     Args:
         config: Parsed backtest-settings dictionary. Must contain the
             sections ``trading_parameters``, ``risk_management``,
-            ``parameter_scaling``, and ``execution_costs`` as defined in
-            ``configs/backtest_settings.toml``.
+            and ``execution_costs`` as defined in ``configs/backtest_settings.toml``.
 
     Example::
 
@@ -53,7 +50,6 @@ class GenericBacktestEngine(BaseEngine):
         ) -> None:
         self.trading_parameters  = config["trading_parameters"]
         self.risk_parameters     = config["risk_management"]
-        self.scaling_parameters  = config["parameter_scaling"]
         self.execution_costs     = config["execution_costs"]
         self._funding_mgr        = funding_rate_manager
         self._symbol             = symbol
@@ -151,109 +147,27 @@ class GenericBacktestEngine(BaseEngine):
 
         return self._build_results(trades)
 
-    def build_dynamic_params(
-        self,
-        estimated_params: dict[str, Any],
-        ref_sigma: float | None = None,
-        ) -> dict[str, Any]:
-        """Scale execution parameters by the model's SNR and volatility.
+    def get_fixed_params(self) -> dict[str, Any]:
+        """Return fixed execution parameters from config.
 
-        Derives trade-specific TP / SL / trailing / max-hold values from
-        the model's estimated signal-to-noise ratio (SNR) so that each
-        walk-forward window adapts its risk profile to current market
-        conditions.
-
-        Args:
-            estimated_params: Model parameter dict from ``BaseModel.fit``.
-                Expected keys: ``alpha_long``, ``alpha_short``, ``sigma_1``.
-                Falls back to config defaults when keys are absent.
-            ref_sigma: Per-window reference sigma computed from EMA of
-                preceding training slice volatility. When provided, overrides
-                the fixed ``reference_sigma_1`` value in config. Falls back
-                to config default when ``None``.
-
-        Returns:
-            Dictionary of scaled execution parameters compatible with
-            :meth:`run_backtest`.
-        """
-        ref_sigma = ref_sigma or self.risk_parameters.get("reference_sigma_1", 14.665)
-        sigma_1 = estimated_params.get("sigma_1", ref_sigma)
-        vol_quality = sigma_1 / ref_sigma
-
-        snr_long = estimated_params.get("alpha_long", 30.0) / sigma_1
-        snr_short = estimated_params.get("alpha_short", 20.0) / sigma_1
-
-        scale = self.scaling_parameters
-        snr_div = scale["snr_divisor"]
-        tp = self.trading_parameters
-
-        return {
-            "tp_long": tp["tp_long"] * float(
-                np.clip(snr_long / snr_div, *scale["tp_long_clip"])
-            ),
-            "sl_long": tp["sl_long"] * vol_quality * float(
-                np.clip(1.0 / (snr_long / snr_div), *scale["sl_long_clip"])
-            ),
-            "tp_short": tp["tp_short"] * float(
-                np.clip(snr_short / snr_div, *scale["tp_short_clip"])
-            ),
-            "sl_short": tp["sl_short"] * vol_quality * float(
-                np.clip(
-                    scale["sl_short_numerator"] / snr_short,
-                    *scale["sl_short_clip"],
-                )
-            ),
-            "max_hold": max(
-                scale["min_hold_hours"],
-                tp["max_hold_hours"] * vol_quality,
-            ),
-            "trailing_start_long": (
-                tp["trailing_stop_start_ratio"] * vol_quality
-            ),
-            "trailing_start_short": (
-                tp["trailing_stop_start_ratio"]
-                * scale["short_trailing_multiplier"]
-                * vol_quality
-            ),
-        }
-
-    def get_fixed_params(self, vol_quality: float = 1.0) -> dict[str, Any]:
-        """Return fixed execution parameters from config with vol_quality adjustment.
-
-        Used by benchmark models that do not produce MCMC posterior
-        estimates (GARCH, Simple Breakout, MA Crossover, RSI, HMM, DL).
-        SNR scaling is bypassed entirely.
-
-        ``vol_quality`` is computed upstream in WalkForwardRunner as
-        window_sigma / reference_sigma — both in log_return.std() * 100 scale,
-        so no unit conversion is needed.
-
-        When vol_quality = 1.0 (default), returns identical values to config.
-
-        Args:
-            vol_quality: Ratio of current window sigma to reference sigma.
-                         > 1.0 widens SL (high volatility regime).
-                         < 1.0 narrows SL (low volatility regime).
-                         Defaults to 1.0 (no adjustment).
+        Used by all models. Returns raw config values without any
+        vol_quality or SNR adjustment — scaling is handled entirely
+        by the model adapter before signals reach the engine.
 
         Returns:
             Dictionary of execution parameters compatible with
             :meth:`run_backtest`.
         """
         tp    = self.trading_parameters
-        scale = self.scaling_parameters
 
         return {
             "tp_long":              tp["tp_long"],
-            "sl_long":              tp["sl_long"]  * vol_quality,
+            "sl_long":              tp["sl_long"],
             "tp_short":             tp["tp_short"],
-            "sl_short":             tp["sl_short"] * vol_quality,
-            "max_hold":             tp["max_hold_hours"] * vol_quality,
+            "sl_short":             tp["sl_short"],
+            "max_hold":             tp["max_hold_hours"],
             "trailing_start_long":  tp["trailing_stop_start_ratio"],
-            "trailing_start_short": (
-                tp["trailing_stop_start_ratio"]
-                * scale["short_trailing_multiplier"]
-            ),
+            "trailing_start_short": tp["trailing_stop_start_ratio"],
         }
 
     # ------------------------------------------------------------------

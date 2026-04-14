@@ -117,20 +117,8 @@ class GenericBacktestEngine(BaseEngine):
 
                 entry_price = float(nxt["Open"])
 
-                adx_val = float(curr.get("ADX", 0))
-                adx_thr = self.trading_parameters.get("adx_threshold", 30)
-                adx_boost_mult = self.scaling_parameters.get("adx_boost_threshold_multiplier", 1.2)
-                hold_boost_ratio = self.scaling_parameters.get("max_hold_boost_ratio", 1.5)
-
-                current_max_hold = dynamic_params["max_hold"]
-                if adx_val > adx_thr * adx_boost_mult:
-                    current_max_hold *= hold_boost_ratio
-
                 if signal == 1:
-                    sl_price = min(
-                        entry_price * (1.0 - dynamic_params["sl_long"]),
-                        float(curr["dynamic_resistance"]),
-                    )
+                    sl_price = entry_price * (1.0 - dynamic_params["sl_long"])
                     active_position = {
                         "position_type": "Long",
                         "entry_price": entry_price,
@@ -146,10 +134,7 @@ class GenericBacktestEngine(BaseEngine):
                     is_in_position = True
 
                 elif signal == -1:
-                    sl_price = max(
-                        entry_price * (1.0 + dynamic_params["sl_short"]),
-                        float(curr["dynamic_support"]),
-                    )
+                    sl_price = entry_price * (1.0 + dynamic_params["sl_short"])
                     active_position = {
                         "position_type": "Short",
                         "entry_price": entry_price,

@@ -250,12 +250,14 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 3. Event tagging (MDRS-SDE only)
     # ------------------------------------------------------------------
+    # Load events for all models — used by WalkForwardRunner for event sigma
+    events_dir  = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
+    events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
+    builder     = DatasetBuilder(project_root=_REPO_ROOT)
+    events      = builder.load_events_from_path(events_path)
+
     if ModelRegistry.requires_event_tagging(args.model):
         log.info("Applying event tagging for %s ...", args.model)
-        events_dir  = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
-        events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
-        builder     = DatasetBuilder(project_root=_REPO_ROOT)
-        events      = builder.load_events_from_path(events_path)
         full_data   = builder.apply_event_tagging(full_data, events)
         full_data   = preprocessor.calculate_directional_indicator(full_data)
         train_data  = builder.slice_training_data(full_data)

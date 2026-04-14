@@ -43,7 +43,7 @@ Usage
 from __future__ import annotations
 
 import argparse
-import json
+import pickle
 import logging
 import pathlib
 import sys
@@ -118,11 +118,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # Ablation flags
     # ------------------------------------------------------------------
     parser.add_argument(
-        "--no-ema-sigma",
-        action="store_true",
-        help="Disable EMA sigma reference. Use fixed reference_sigma_1 from config.",
-    )
-    parser.add_argument(
         "--no-sticky",
         action="store_true",
         help="Disable sticky filter.",
@@ -164,7 +159,7 @@ def _override_wfa_dates(
 
 def _save_results(
     trades: pd.DataFrame,
-    param_summary: dict[str, dict[str, Any]],
+    param_summary: dict[str, pd.DataFrame],
     model_key: str,
     symbol: str,
     ) -> None:
@@ -175,18 +170,14 @@ def _save_results(
     stem = f"{model_key}_{symbol.lower()}_{timestamp}"
 
     trades_path = results_dir / f"{stem}_trades.csv"
-    params_path = results_dir / f"{stem}_params.json"
+    params_path = results_dir / f"{stem}_params.pkl"
 
     if not trades.empty:
         trades.to_csv(trades_path, index=False)
         logging.getLogger(__name__).info("Trades saved → %s", trades_path)
 
-    with open(params_path, "w", encoding="utf-8") as fh:
-        serialisable = {
-            w: {k: v for k, v in p.items() if isinstance(v, (int, float, str))}
-            for w, p in param_summary.items()
-        }
-        json.dump(serialisable, fh, indent=2)
+    with open(params_path, "wb") as fh:
+        pickle.dump(param_summary, fh)
     logging.getLogger(__name__).info("Params saved  → %s", params_path)
 
 
@@ -220,8 +211,6 @@ def main() -> int:
 
     # Ablation: override filter_config from CLI flags
     filter_cfg = bt_cfg.get("filters", {}).copy()
-    if args.no_ema_sigma:
-        filter_cfg["use_ema_sigma"] = False
     if args.no_sticky:
         filter_cfg["use_sticky"] = False
     if args.no_adx:
@@ -261,12 +250,14 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 3. Event tagging (MDRS-SDE only)
     # ------------------------------------------------------------------
+    # Load events for all models — used by WalkForwardRunner for event sigma
+    events_dir  = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
+    events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
+    builder     = DatasetBuilder(project_root=_REPO_ROOT)
+    events      = builder.load_events_from_path(events_path)
+
     if ModelRegistry.requires_event_tagging(args.model):
         log.info("Applying event tagging for %s ...", args.model)
-        events_dir  = _REPO_ROOT / preprocessor_cfg.get("events_directory", "data/events")
-        events_path = events_dir / f"{args.symbol.lower()}_{collection_cfg['interval']}.toml"
-        builder     = DatasetBuilder(project_root=_REPO_ROOT)
-        events      = builder.load_events_from_path(events_path)
         full_data   = builder.apply_event_tagging(full_data, events)
         full_data   = preprocessor.calculate_directional_indicator(full_data)
         train_data  = builder.slice_training_data(full_data)
@@ -300,8 +291,6 @@ def main() -> int:
         engine=engine,
         wfa_config=wfa_config,
         filter_config=filter_cfg,
-        use_dynamic_params=ModelRegistry.use_dynamic_params(args.model),
-        use_ema_sigma=ModelRegistry.use_ema_sigma(args.model),
     )
 
     # ------------------------------------------------------------------

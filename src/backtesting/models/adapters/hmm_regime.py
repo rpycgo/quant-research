@@ -75,7 +75,7 @@ class HMMRegimeAdapter(BaseModel):
         """
         self._check_hmmlearn()
 
-        returns = train_data["log_return"].dropna().values.reshape(-1, 1)
+        returns = (train_data["log_return"].dropna() * 100).values.reshape(-1, 1)
 
         if len(returns) < self._n_states * 10:
             logger.warning(
@@ -103,16 +103,10 @@ class HMMRegimeAdapter(BaseModel):
                 bullish_state,
             )
 
-            return {
+            return BaseModel.wrap_fit_result({
                 "model":         model,
                 "bullish_state": bullish_state,
-                # Fallback SNR params for build_dynamic_params
-                "alpha_long":  float(max(means[bullish_state] * 100, 0.5)),
-                "alpha_short": float(max(-means[bearish_state] * 100, 0.5)),
-                "sigma_1":     float(
-                    np.sqrt(model.covars_[bullish_state].flatten()[0]) * 100
-                ),
-            }
+            })
 
         except Exception as exc:  # noqa: BLE001
             logger.error("HMM fitting failed: %s", exc)
@@ -145,7 +139,7 @@ class HMMRegimeAdapter(BaseModel):
             return df
 
         bullish_state = params.get("bullish_state", 0)
-        returns = df["log_return"].fillna(0).values.reshape(-1, 1)
+        returns = (df["log_return"].fillna(0) * 100).values.reshape(-1, 1)
 
         try:
             states = model.predict(returns)

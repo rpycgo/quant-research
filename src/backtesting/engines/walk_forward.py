@@ -21,11 +21,11 @@ Given a ``start_date``, an ``end_date``, ``training_months``, and
 from __future__ import annotations
 
 import logging
+import pickle
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-import pickle
-from pathlib import Path
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 from joblib import Parallel, delayed
@@ -82,7 +82,8 @@ class WalkForwardRunner:
             wfa_config=bt_cfg["walk_forward_settings"],
             filter_config=bt_cfg["filters"],
         )
-        result  = runner.run(preprocessed_data, train_data)
+        signals_path = runner.fit_all(preprocessed_data, train_data, "results/signals.pkl")
+        trades, params = runner.backtest_from_signals(signals_path, bt_cfg)
     """
     def __init__(
         self,
@@ -98,6 +99,7 @@ class WalkForwardRunner:
         self._train_months            = wfa_config.get("training_months", 3)
         self._test_months             = wfa_config.get("testing_months", 1)
         self._n_jobs                  = wfa_config.get("parallel_jobs", 1)
+        self._reference_window_months = wfa_config.get("reference_window_months", 12)
 
         filters = filter_config or {}
 
@@ -108,34 +110,34 @@ class WalkForwardRunner:
     def fit_all(
         self,
         full_data: pd.DataFrame,
-        train_data: pd.DataFrame,
+        train_data: pd.DataFrame | None,
         signals_path: str | Path,
         ) -> Path:
         """Run fit() + predict() for all windows and persist WindowResults.
 
-        Executes the expensive MCMC fit and signal generation for every
-        walk-forward window, then saves the resulting :class:`WindowResult`
-        list to *signals_path* as a pickle file.
+        Executes MCMC fit and signal generation for every walk-forward
+        window, then saves the resulting list of :class:`WindowResult`
+        to *signals_path* as a pickle file. The saved file can be passed
+        to :meth:`backtest_from_signals` to re-run the backtest step in
+        isolation — without repeating fit/predict.
 
         This is the first step of the standard two-phase workflow:
 
-        1. ``fit_all()``             — fit + predict, persist signals
+        1. ``fit_all()``               — fit + predict, persist signals
         2. ``backtest_from_signals()`` — backtest only, repeat freely
 
-        The persisted ``.pkl`` file contains the full signal DataFrame
-        per window (OHLCV + signal + confidence + all feature columns),
-        enabling backtest replay without re-running MCMC.
-
         Args:
-            full_data:    Full OHLCV + feature DataFrame (used for
-                          out-of-sample slicing).
-            train_data:   Training-eligible rows (pre-filtered by
-                          ``DatasetBuilder.slice_training_data()``).
+            full_data:    Full OHLCV + feature DataFrame (out-of-sample slicing).
+            train_data:   Training-eligible rows. Falls back to *full_data*
+                          when ``None``.
             signals_path: Destination path for the ``.pkl`` file.
 
         Returns:
             Resolved :class:`~pathlib.Path` of the saved pickle file.
         """
+        if train_data is None or train_data.empty:
+            train_data = full_data
+
         if full_data.index.tz is not None:
             full_data = full_data.copy()
             full_data.index = full_data.index.tz_localize(None)
@@ -152,7 +154,7 @@ class WalkForwardRunner:
             type(self._model).__name__,
         )
 
-        window_results = Parallel(n_jobs=self._n_jobs)(
+        window_results: list[WindowResult | None] = Parallel(n_jobs=self._n_jobs)(
             delayed(self._fit_window)(test_start, train_data, full_data)
             for test_start in test_starts
         )
@@ -163,8 +165,10 @@ class WalkForwardRunner:
             pickle.dump(window_results, fh)
 
         n_ok = sum(1 for r in window_results if r is not None)
-        logger.info("fit_all: saved %d/%d windows → %s", n_ok, len(test_starts), signals_path)
-
+        logger.info(
+            "fit_all: saved %d/%d windows → %s",
+            n_ok, len(test_starts), signals_path,
+        )
         return signals_path
 
     def backtest_from_signals(
@@ -175,24 +179,25 @@ class WalkForwardRunner:
         """Re-run backtest from persisted WindowResults (no re-fitting).
 
         Loads the pickle file produced by :meth:`fit_all`, calls
-        ``get_fixed_params()`` and ``run_backtest()`` for every window,
-        and aggregates trades.  MCMC sampling and signal generation are
-        skipped entirely, making this suitable for rapid parameter
-        sensitivity experiments.
+        ``get_fixed_params()`` and ``run_backtest()`` for every window
+        within the configured date range, and aggregates trades. MCMC
+        sampling and signal generation are skipped entirely.
 
         Args:
             signals_path: Path to the ``.pkl`` file produced by
                           :meth:`fit_all`.
+            bt_cfg:       Full backtest settings dict. Used to filter
+                          windows by ``start_date`` / ``end_date`` from
+                          ``bt_cfg["walk_forward_settings"]``.
 
         Returns:
-            ``(all_trades, param_summary)`` — same shape as
-            :meth:`run`.
+            ``(all_trades, param_summary)``
         """
-        wf_settings = bt_cfg['walk_forward_settings']
+        wf_settings = bt_cfg["walk_forward_settings"]
 
         signals_path = Path(signals_path)
         with open(signals_path, "rb") as fh:
-            window_results = pickle.load(fh)
+            window_results: list[WindowResult | None] = pickle.load(fh)
 
         logger.info(
             "backtest_from_signals: loaded %d windows from %s",
@@ -201,22 +206,21 @@ class WalkForwardRunner:
         )
         logger.info(
             "backtesting dates: %s ~ %s",
-            wf_settings['start_date'],
-            wf_settings['end_date'],
+            wf_settings["start_date"],
+            wf_settings["end_date"],
         )
 
-        params = self._engine.get_fixed_params()
+        exec_params = self._engine.get_fixed_params()
 
-        updated = []
+        updated: list[WindowResult | None] = []
         for res in window_results:
             if res is None:
                 updated.append(None)
                 continue
-            if not (wf_settings['start_date'] <= res.window_label <= wf_settings['end_date']):
+            if not (wf_settings["start_date"] <= res.window_label <= wf_settings["end_date"]):
                 continue
-
             try:
-                trades = self._engine.run_backtest(res.signal_df, params)
+                trades = self._engine.run_backtest(res.signal_df, exec_params)
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "run_backtest() failed for window %s: %s",
@@ -228,6 +232,10 @@ class WalkForwardRunner:
 
         return self._aggregate(updated)
 
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
     def _fit_window(
         self,
         test_start: pd.Timestamp,
@@ -236,7 +244,6 @@ class WalkForwardRunner:
         ) -> WindowResult | None:
         """Run fit() + predict() only — no backtest.
 
-        Same as :meth:`_process_window` but skips ``run_backtest()``.
         Used by :meth:`fit_all` to persist signals for later reuse.
 
         Args:
@@ -272,15 +279,27 @@ class WalkForwardRunner:
         # Fit
         try:
             training_results = self._model.fit(train_slice)
-            param_summary = training_results['summary']
-            mean_params = training_results['estimates']
         except Exception as exc:  # noqa: BLE001
             logger.error("fit() failed for window %s: %s", label, exc)
             return None
 
-        if param_summary.empty:
+        if not training_results:
             logger.warning("Window %s: fit() returned empty params.", label)
             return None
+
+        # MDRS-SDE: {'summary': DataFrame, 'estimates': dict, 'trace': ...}
+        # All other models: wrap_fit_result → same structure
+        param_summary = training_results.get("summary", pd.DataFrame())
+        mean_params   = training_results.get("estimates", training_results)
+
+        # MCMC models (MDRS-SDE): summary is a non-empty DataFrame
+        # Non-MCMC models (DL, GARCH, etc.): summary is intentionally empty
+        # Only fail if summary is empty AND estimates is also empty/missing
+        if isinstance(param_summary, pd.DataFrame) and param_summary.empty:
+            estimates = training_results.get("estimates", {})
+            if not estimates:
+                logger.warning("Window %s: fit() returned empty results.", label)
+                return None
 
         # Predict
         try:
@@ -291,7 +310,7 @@ class WalkForwardRunner:
 
         return WindowResult(
             window_label=label,
-            trades=pd.DataFrame(),   # intentionally empty — backtest not run
+            trades=pd.DataFrame(),   # intentionally empty — backtest not run yet
             params=param_summary,
             signal_df=signal_df,
         )
@@ -299,7 +318,7 @@ class WalkForwardRunner:
     @staticmethod
     def _aggregate(
         results: list[WindowResult | None],
-        ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
+        ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
         """Concatenate per-window results into analysis-ready outputs.
 
         Args:

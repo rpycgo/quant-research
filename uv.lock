@@ -3064,7 +3064,7 @@ wheels = [
 
 [[package]]
 name = "quant-research"
-version = "1.15.3"
+version = "1.15.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

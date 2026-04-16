@@ -127,7 +127,7 @@ class GarchCryptoAdapter(BaseModel):
 
         from arch import arch_model  # type: ignore[import]
 
-        train_returns = train_data["log_return"] * 100.0
+        train_returns = train_data["log_return"].dropna() * 100.0
         model = arch_model(
             train_returns,
             vol="Garch",
@@ -159,13 +159,13 @@ class GarchCryptoAdapter(BaseModel):
             result.conditional_volatility.iloc[-1] / internal_scale / 100.0
         )
 
-        return {
+        return BaseModel.wrap_fit_result({
             "alpha_long": alpha_long,
             "alpha_short": alpha_short,
             "sigma_1": sigma_1,
             "arch_result": result,
             "internal_scale": internal_scale,
-        }
+        })
 
     def predict(
         self,
@@ -215,13 +215,14 @@ class GarchCryptoAdapter(BaseModel):
         forecasts = result.forecast(horizon=horizon, reindex=False)
         forecast_vol = (
             np.sqrt(forecasts.variance.values.flatten())
-            / (internal_scale * 100.0)
+            / internal_scale
         )
         df["GARCH_Vol"] = forecast_vol
 
-        # Step 2 — bar-level Z-score
+        # Step 2 — bar-level Z-score (log_return / GARCH_Vol, same units)
+        log_ret  = np.log(df["Close"] / df["Open"]) * 100.0
         safe_vol = df["GARCH_Vol"].replace(0, np.nan)
-        z_score = (df["Close"] - df["Open"]) / (df["Open"] * safe_vol)
+        z_score  = log_ret / safe_vol
 
         # Step 3 — sigmoid regime probability
         df["regime_prob"] = 1.0 / (

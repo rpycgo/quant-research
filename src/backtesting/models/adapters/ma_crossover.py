@@ -55,7 +55,7 @@ class MACrossoverAdapter(BaseModel):
         Returns:
             Dict with ``fast`` and ``slow`` keys.
         """
-        return {"fast": self._fast, "slow": self._slow}
+        return BaseModel.wrap_fit_result({"fast": self._fast, "slow": self._slow})
 
     def predict(
         self,

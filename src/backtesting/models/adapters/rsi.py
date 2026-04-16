@@ -61,11 +61,11 @@ class RSIAdapter(BaseModel):
         Returns:
             Dict with ``period``, ``oversold``, ``overbought`` keys.
         """
-        return {
+        return BaseModel.wrap_fit_result({
             "period":     self._period,
             "oversold":   self._oversold,
             "overbought": self._overbought,
-        }
+        })
 
     def predict(
         self,

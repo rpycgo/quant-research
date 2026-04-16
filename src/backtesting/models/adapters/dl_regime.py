@@ -49,6 +49,8 @@ class DlRegimeCryptoAdapter(BaseModel):
     and generates trading signals using the same filtering logic as
     MDRS-SDE (sticky filter + ADX gate + direction gate).
 
+    DL models use fixed execution parameters from config (no SNR or
+    vol_quality scaling) since they lack MCMC posterior estimates.
     TP/SL/trailing stop ratios are read directly from
     ``backtest_settings.toml`` via ``get_fixed_params()``.
 
@@ -124,12 +126,12 @@ class DlRegimeCryptoAdapter(BaseModel):
             self._architecture, window_label,
         )
 
-        return {
+        return BaseModel.wrap_fit_result({
             "model": model,
             "checkpoint_path": str(ckpt_path),
             "window_label": window_label,
             "architecture": self._architecture,
-        }
+        })
 
     def predict(
         self,

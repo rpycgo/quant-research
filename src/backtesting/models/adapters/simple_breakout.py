@@ -55,7 +55,7 @@ class SimpleBreakoutAdapter(BaseModel):
         Returns:
             Dict with ``window`` key.
         """
-        return {"window": self._window}
+        return BaseModel.wrap_fit_result({"window": self._window})
 
     def predict(
         self,

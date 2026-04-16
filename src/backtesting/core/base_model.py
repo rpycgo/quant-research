@@ -60,13 +60,45 @@ class BaseModel(ABC):
                 no leading ``NaN`` rows in the essential feature columns.
 
         Returns:
-            A plain dictionary of estimated parameters.  The schema is
-            model-specific; the engine layer never reads these values
-            directly.  Returns an **empty dict** (not ``None``) when
+            A dictionary with the following structure:
+
+            * ``"summary"``   — parameter summary (e.g. ``pd.DataFrame``
+                                from arviz for MCMC models, or an empty
+                                ``pd.DataFrame`` for non-probabilistic models).
+            * ``"estimates"`` — plain ``dict`` of point estimates passed to
+                                :meth:`predict`.
+
+            Returns ``{"summary": pd.DataFrame(), "estimates": {}}`` when
             estimation fails so that the caller can detect failure without
             an exception.
+
+            Non-MCMC adapters should wrap their return value using
+            :meth:`wrap_fit_result`.
         """
         pass
+
+    @staticmethod
+    def wrap_fit_result(params: dict[str, Any]) -> dict[str, Any]:
+        """Wrap a plain params dict into the standard fit() return structure.
+
+        Non-probabilistic models (GARCH, DL, Simple Breakout, etc.) that
+        return a plain ``dict`` from ``fit()`` should call this helper to
+        conform to the standard contract expected by
+        :class:`~backtesting.engines.walk_forward.WalkForwardRunner`.
+
+        Args:
+            params: Plain parameter dict returned by the concrete adapter.
+
+        Returns:
+            ``{"summary": pd.DataFrame(), "estimates": params}``
+
+        Example::
+
+            def fit(self, train_data):
+                ...
+                return BaseModel.wrap_fit_result({"window": self._window})
+        """
+        return {"summary": pd.DataFrame(), "estimates": params}
 
     @abstractmethod
     def predict(

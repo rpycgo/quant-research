@@ -17,7 +17,7 @@ dist = "normal"   # error distribution: "normal" | "t" | "skewt"
 # Remove or adjust for other symbols.
 [regime_signal]
 k_avg     = 0.45   # sigmoid slope (replaces hard-coded garch.py value)
-gamma_avg = 2.70   # sigmoid threshold
+gamma_avg = 2.00   # sigmoid threshold
 
 [execution_costs]
 # Override if BTC futures commissions differ from the shared backtest default.

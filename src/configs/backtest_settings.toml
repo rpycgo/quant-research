@@ -9,7 +9,6 @@
 [filters]
 use_sticky          = true
 use_adx             = true
-use_ema_sigma       = true
 only_selected_zone  = false
 
 [execution_costs]

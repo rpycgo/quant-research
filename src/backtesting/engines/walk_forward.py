@@ -209,11 +209,12 @@ class WalkForwardRunner:
 
         updated = []
         for res in window_results:
-            if not (wf_settings['start_date'] <= res.window_label <= wf_settings['end_date']):
-                continue
             if res is None:
                 updated.append(None)
                 continue
+            if not (wf_settings['start_date'] <= res.window_label <= wf_settings['end_date']):
+                continue
+
             try:
                 trades = self._engine.run_backtest(res.signal_df, params)
             except Exception as exc:  # noqa: BLE001

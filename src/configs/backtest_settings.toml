@@ -11,6 +11,17 @@ use_sticky          = true
 use_adx             = true
 only_selected_zone  = false
 
+[filters.qpb]
+# Quiet Pre-Breakout gate: restricts entries to signals arising from a
+# microstructure regime consistent with high-quality breakouts.
+# Thresholds are BTC-calibrated (2020-2025 walk-forward).  For non-BTC
+# assets either disable the gate (`enabled = false`) or recalibrate
+# the thresholds on the target instrument.
+enabled                = true
+past_vol_48b_max       = 0.003   # 4h log-return std cap
+aligned_pret_48b_max   = 0.02    # direction-aligned 4h return cap
+d_rv_90d_max           = 0.55    # 90d annualised realised vol cap
+
 [execution_costs]
 commission_rate = 0.0005   # 0.05 % per leg
 slippage_rate   = 0.001    # 0.10 % per leg

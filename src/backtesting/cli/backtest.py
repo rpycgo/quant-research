@@ -31,11 +31,12 @@ Usage
     qr-backtest --model rsi_btc --symbol BTCUSDT
     qr-backtest --model hmm_btc --symbol BTCUSDT
 
-    # Ablation flags
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma
+    # Ablation flags (regime-probability adapters only)
     qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
     qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-ema-sigma --no-sticky --no-adx
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
+    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \\
+        --no-sticky --no-adx --no-qpb
 
     # List all registered models
     qr-backtest --list-models
@@ -129,6 +130,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Disable ADX gate.",
     )
     parser.add_argument(
+        "--no-qpb",
+        action="store_true",
+        help="Disable QPB (Quiet Pre-Breakout) microstructure gate.",
+    )
+    parser.add_argument(
         "--no-funding",
         action="store_true",
         help="Disable funding rate deduction from PnL.",
@@ -173,6 +179,29 @@ def _override_wfa_dates(
         cfg["start_date"] = start
     if end:
         cfg["end_date"] = end
+    return cfg
+
+
+def _apply_filter_overrides(
+    filter_cfg: dict[str, Any],
+    args: argparse.Namespace,
+    ) -> dict[str, Any]:
+    """Apply CLI ablation flags on top of the config-loaded filter dict.
+
+    Returns a new dict; does not mutate the input. The ``[filters.qpb]``
+    sub-section is deep-copied before modification so that CLI overrides
+    do not leak into the shared config.
+    """
+    cfg = filter_cfg.copy()
+    if args.no_sticky:
+        cfg["use_sticky"] = False
+    if args.no_adx:
+        cfg["use_adx"] = False
+    if args.no_qpb:
+        qpb = cfg.get("qpb", {}).copy()
+        qpb["enabled"] = False
+        cfg["qpb"] = qpb
+
     return cfg
 
 
@@ -231,11 +260,7 @@ def main() -> int:
     )
 
     # Ablation: override filter_config from CLI flags
-    filter_cfg = bt_cfg.get("filters", {}).copy()
-    if args.no_sticky:
-        filter_cfg["use_sticky"] = False
-    if args.no_adx:
-        filter_cfg["use_adx"] = False
+    filter_cfg = _apply_filter_overrides(bt_cfg.get("filters", {}), args)
 
     log.info(
         "Run: model=%s | symbol=%s | %s → %s | filters=%s",

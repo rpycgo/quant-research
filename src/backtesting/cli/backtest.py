@@ -292,6 +292,11 @@ def main() -> int:
     # 4. Model and engine construction
     # ------------------------------------------------------------------
     model  = ModelRegistry.get(args.model, loader)
+    # Apply CLI filter overrides directly to model so predict() honours
+    # --no-sticky / --no-adx in both fit_all and --from-signals modes
+    if hasattr(model, "_filters"):
+        model._filters = filter_cfg.copy()
+
     funding_mgr = (
         None
         if args.no_funding

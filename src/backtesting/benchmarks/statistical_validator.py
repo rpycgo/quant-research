@@ -84,12 +84,22 @@ class StatisticalValidator:
         total_returns: list[float] = []
         mdds         : list[float] = []
 
+        # Annualisation factor: consistent with PerformanceAnalyzer
+        # ann_factor = sqrt(n_trades / (duration_years))
+        if "entry_time" in trades_df.columns:
+            entry = pd.to_datetime(trades_df["entry_time"])
+            duration_days = (entry.max() - entry.min()).days
+        else:
+            duration_days = n * 1  # fallback: assume 1 day per trade
+        duration_years = max(duration_days / 365.0, 1e-9)
+        ann_factor = np.sqrt(n / duration_years)
+
         for _ in range(n_bootstrap):
             sample  = rng.choice(pnl, size=n, replace=True)
             equity  = np.cumprod(1.0 + sample)
             ret     = equity[-1] - 1.0
             mu, sigma = sample.mean(), sample.std()
-            sh      = (mu / sigma * np.sqrt(n)) if sigma > 0 else 0.0
+            sh      = (mu / sigma * ann_factor) if sigma > 0 else 0.0
             peak    = np.maximum.accumulate(equity)
             dd      = ((equity - peak) / peak).min()
 
@@ -109,7 +119,7 @@ class StatisticalValidator:
         ret_obs     = (equity_obs[-1] - 1.0) * 100.0
         mu_obs      = pnl.mean()
         sig_obs     = pnl.std()
-        sharpe_obs  = (mu_obs / sig_obs * np.sqrt(n)) if sig_obs > 0 else 0.0
+        sharpe_obs  = (mu_obs / sig_obs * ann_factor) if sig_obs > 0 else 0.0
 
         logger.info(
             "Bootstrap CI (%d resamples, %.0f%% CI) complete.",
@@ -153,15 +163,24 @@ class StatisticalValidator:
         rng  = np.random.default_rng(random_state)
         pnl  = trades_df["PnL"].values
         n    = len(pnl)
+        if "entry_time" in trades_df.columns:
+            entry = pd.to_datetime(trades_df["entry_time"])
+            duration_days = (entry.max() - entry.min()).days
+        else:
+            duration_days = n
+        ann_factor = np.sqrt(n / max(duration_days / 365.0, 1e-9))
         mu   = pnl.mean()
         sig  = pnl.std()
-        observed_sharpe = (mu / sig * np.sqrt(n)) if sig > 0 else 0.0
+        observed_sharpe = (mu / sig * ann_factor) if sig > 0 else 0.0
 
         null_sharpes: list[float] = []
         for _ in range(n_permutations):
-            shuffled = rng.permutation(pnl)
+            # Randomly flip signs of PnL to build null distribution.
+            # Permuting order alone does not change mean/std/Sharpe.
+            signs    = rng.choice([-1.0, 1.0], size=n)
+            shuffled = pnl * signs
             s        = shuffled.std()
-            sh       = (shuffled.mean() / s * np.sqrt(n)) if s > 0 else 0.0
+            sh       = (shuffled.mean() / s * ann_factor) if s > 0 else 0.0
             null_sharpes.append(sh)
 
         null_arr = np.array(null_sharpes)
@@ -243,7 +262,11 @@ class StatisticalValidator:
             ret    = (equity[-1] - 1.0) * 100.0
             n      = len(pnl)
             mu, sigma = pnl.mean(), pnl.std()
-            sharpe = (mu / sigma * np.sqrt(n)) if sigma > 0 else 0.0
+            # Duration-based annualisation — consistent with PerformanceAnalyzer
+            sub_entry = pd.to_datetime(subset["entry_time"])
+            sub_days  = max((sub_entry.max() - sub_entry.min()).days, 1)
+            sub_ann   = np.sqrt(n / max(sub_days / 365.0, 1e-9))
+            sharpe = (mu / sigma * sub_ann) if sigma > 0 else 0.0
             win_rate = (pnl > 0).mean() * 100.0
             t_stat, p_value = stats.ttest_1samp(pnl, 0)
 

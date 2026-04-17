@@ -219,8 +219,21 @@ class WalkForwardRunner:
                 continue
             if not (wf_settings["start_date"] <= res.window_label <= wf_settings["end_date"]):
                 continue
+            # Re-generate signals with current filter settings (supports ablation).
+            # predict() re-applies sticky/ADX filters using self._model._filters
+            # which reflects CLI --no-sticky / --no-adx overrides.
             try:
-                trades = self._engine.run_backtest(res.signal_df, exec_params)
+                mean_params = res.params if isinstance(res.params, dict) else {}
+                signal_df   = self._model.predict(res.signal_df, mean_params)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "predict() failed for window %s: %s",
+                    res.window_label, exc,
+                )
+                signal_df = res.signal_df
+
+            try:
+                trades = self._engine.run_backtest(signal_df, exec_params)
             except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "run_backtest() failed for window %s: %s",
@@ -301,12 +314,28 @@ class WalkForwardRunner:
                 logger.warning("Window %s: fit() returned empty results.", label)
                 return None
 
+        # R-hat convergence check for MCMC models
+        if isinstance(param_summary, pd.DataFrame) and not param_summary.empty:
+            if "r_hat" in param_summary.columns:
+                max_rhat = float(param_summary["r_hat"].max())
+                if max_rhat > 1.01:
+                    logger.warning(
+                        "Window %s: max R-hat=%.3f > 1.01 — convergence failed, skipping.",
+                        label, max_rhat,
+                    )
+                    return None
+                logger.debug("Window %s: max R-hat=%.3f ✓", label, max_rhat)
+
         # Predict
         try:
             signal_df = self._model.predict(test_slice, mean_params)
         except Exception as exc:  # noqa: BLE001
             logger.error("predict() failed for window %s: %s", label, exc)
             return None
+
+        # Strip filter-dependent columns so backtest_from_signals()
+        # can re-apply filters with different settings (ablation support).
+        signal_df = signal_df.drop(columns=["signal", "confidence"], errors="ignore")
 
         return WindowResult(
             window_label=label,

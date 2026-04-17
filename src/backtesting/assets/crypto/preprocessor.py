@@ -22,6 +22,10 @@ Computed columns
 * ``dynamic_support``           — Donchian-channel lower band (lag-1)
 * ``ADX``                       — Average Directional Index (14-period)
 * ``direction_indicator``       — 1 / -1 / 0 relative to quiet S/R levels
+* ``past_vol_48b``              — rolling 48-bar (4h) log-return std
+* ``past_ret_48b``              — 48-bar cumulative return (unsigned)
+* ``d_rv_90d_proxy``            — daily 90-day annualised realised vol,
+                                  lag-1, mapped to 5-minute bars
 """
 from __future__ import annotations
 
@@ -78,6 +82,7 @@ class CryptoPreprocessor:
         df = self.calculate_base_features(df)
         df = self.identify_quiet_sr_levels(df)
         df = self.calculate_strategy_indicators(df)
+        df = self.calculate_qpb_features(df)
 
         return df
 
@@ -212,6 +217,46 @@ class CryptoPreprocessor:
             df["Low"].rolling(self._window).min().shift(1)
         )
         df["ADX"] = self._calculate_adx(df)
+
+        return df
+
+    def calculate_qpb_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute Quiet Pre-Breakout (QPB) entry-gate inputs.
+
+        Produces three microstructure features used by the adapter-level
+        QPB gate to discriminate high-quality breakout entries from
+        cost-inefficient transitions:
+
+        * ``past_vol_48b``   — rolling 48-bar (4 h) std of ``log_return``
+        * ``past_ret_48b``   — 48-bar cumulative close-to-close return
+        * ``d_rv_90d_proxy`` — daily 90-day annualised realised volatility,
+                               lagged by one day and forward-filled onto
+                               5-minute bars to prevent look-ahead
+
+        Args:
+            df: ``DataFrame`` containing ``log_return`` and ``Close``.
+
+        Returns:
+            ``df`` with ``past_vol_48b``, ``past_ret_48b``, and
+            ``d_rv_90d_proxy`` added.
+        """
+        df["past_vol_48b"] = df["log_return"].rolling(48).std()
+        df["past_ret_48b"] = df["Close"].pct_change(48)
+
+        # Daily 90-day realised volatility, lagged 1 day before mapping
+        # back onto the 5-minute grid so today's signal cannot see
+        # today's end-of-day vol.
+        daily_close = df["Close"].resample("D").last()
+        daily_rv = (
+            daily_close.pct_change().rolling(90).std() * np.sqrt(365)
+        )
+        daily_rv_lag1 = daily_rv.shift(1)
+        daily_rv_lag1.index.name = "date"
+
+        date_key = df.index.normalize()
+        df["d_rv_90d_proxy"] = pd.Series(
+            date_key, index=df.index
+        ).map(daily_rv_lag1)
 
         return df
 

@@ -9,16 +9,16 @@ Responsibilities
 * **fit()** — delegates Bayesian MCMC parameter estimation to
   ``mdrs_sde.SdeModeler`` and returns the posterior means as a plain
   ``dict``.
-* **predict()** — runs the sigmoid regime-probability calculation, applies
-  the sticky-breakout persistence filter, and maps the results to
-  ``signal`` / ``confidence`` columns.  All model-specific filtering
-  (sticky duration, ADX gate, zone gate) lives here, not in the engine.
+* **predict()** — runs the sigmoid regime-probability calculation and
+  applies the shared sticky / ADX / QPB pipeline from
+  ``_regime_gates.assemble_signal`` before emitting ``signal`` and
+  ``confidence`` columns.
 
 External dependency
 -------------------
 ``mdrs-sde-btc`` must be installed before this adapter is used::
 
-    pip install git+https://github.com/rpycgo/mdrs-sde-btc.git
+    pip install git+https://github.com/rpycgo-research/mdrs-sde.git
 
 If the package is absent, :meth:`fit` raises ``ImportError`` with a
 helpful installation message rather than a bare ``ModuleNotFoundError``.
@@ -32,11 +32,9 @@ import numpy as np
 import pandas as pd
 
 from backtesting.core.base_model import BaseModel
+from backtesting.models.adapters._regime_gates import assemble_signal
 
 logger = logging.getLogger(__name__)
-
-# Minimum consecutive bars a signal must persist before entry (sticky filter)
-_DEFAULT_MIN_DURATION = 5
 
 
 class MdrsSdeCryptoAdapter(BaseModel):
@@ -46,14 +44,16 @@ class MdrsSdeCryptoAdapter(BaseModel):
     package.  The adapter is asset-agnostic: the same class handles BTC,
     ETH, or any other crypto pair whose preprocessed ``DataFrame`` contains
     the required feature columns (``hybrid_z_score``, ``log_return``,
-    ``direction_indicator``).
+    ``direction_indicator``, and — when QPB is enabled — ``past_vol_48b``,
+    ``past_ret_48b``, ``d_rv_90d_proxy``).
 
     Args:
         model_config: Merged config dict from
             ``BacktestConfigLoader.get_model_config("mdrs_sde_*")``.
             Must contain ``[sde_priors]`` and ``[mcmc_settings]`` sections.
-        backtest_config: Parsed ``[risk_management]`` section used for
-            entry-threshold and sticky-filter settings.
+        backtest_config: Parsed backtest settings dict (consumed sections:
+            ``[risk_management]``, ``[filters]`` including
+            ``[filters.qpb]``, and ``[trading_parameters]``).
 
     Example::
 
@@ -76,6 +76,7 @@ class MdrsSdeCryptoAdapter(BaseModel):
         self._model_config = model_config
         self._risk = backtest_config.get("risk_management", {})
         self._filters = backtest_config.get("filters", {})
+        self._trade = backtest_config.get("trading_parameters", {})
 
     # ------------------------------------------------------------------
     # BaseModel interface
@@ -91,11 +92,10 @@ class MdrsSdeCryptoAdapter(BaseModel):
                 ``log_return``, and ``direction_indicator`` columns.
 
         Returns:
-            Dictionary of posterior mean estimates keyed by parameter name
-            (``alpha_long``, ``alpha_short``, ``kappa``, ``gamma``, ``k``,
-            ``sigma_0``, ``sigma_1``).  Returns an empty ``dict`` when MCMC
-            sampling fails so the walk-forward runner can skip the window
-            without raising.
+            Dictionary containing the MCMC trace, summary, and posterior
+            mean estimates.  Returns an empty ``dict`` when MCMC sampling
+            fails so the walk-forward runner can skip the window without
+            raising.
 
         Raises:
             ImportError: If ``mdrs_sde`` is not installed.
@@ -145,65 +145,39 @@ class MdrsSdeCryptoAdapter(BaseModel):
         ) -> pd.DataFrame:
         """Generate Long / Short / Flat signals using estimated SDE parameters.
 
-        Pipeline (all model-specific; engine sees only ``signal``):
-
-        1. Compute sigmoid regime probability from ``hybrid_z_score``.
-        2. Apply sticky-breakout persistence filter.
-        3. Determine entry direction from ``dynamic_resistance`` /
-           ``dynamic_support`` relative to ``Close``.
-        4. Gate signals by ADX threshold (if ``use_adx`` is ``True``).
-        5. Map to ``signal`` (1 / -1 / 0) and ``confidence``.
+        Computes the sigmoid regime probability from ``hybrid_z_score``
+        and delegates the downstream filtering pipeline (sticky / ADX /
+        QPB) to :func:`_regime_gates.assemble_signal` to guarantee
+        parity with the other regime-probability adapters (DL-regime,
+        HMM).
 
         Args:
             test_data: Out-of-sample ``DataFrame`` containing at minimum
                 ``hybrid_z_score``, ``Close``, ``ADX``,
-                ``dynamic_resistance``, ``dynamic_support``.
-            params: Posterior mean dict from :meth:`fit`.
+                ``dynamic_resistance``, ``dynamic_support``, and — when
+                QPB is enabled — ``past_vol_48b``, ``past_ret_48b``,
+                ``d_rv_90d_proxy``.
+            params: Posterior estimates dict from :meth:`fit`.
 
         Returns:
-            *test_data* with ``signal`` (``int``) and ``confidence``
-            (``float``) columns added.
+            *test_data* with ``regime_prob``, ``confidence``, and
+            ``signal`` columns added.
         """
         df = test_data.copy()
         k = float(params.get("k", 1.0))
         gamma = float(params.get("gamma", 2.0))
 
-        entry_threshold = self._risk.get("entry_probability_threshold", 0.5)
-        min_duration = self._risk.get("minimum_signal_duration", _DEFAULT_MIN_DURATION)
-        use_sticky = self._filters.get("use_sticky", True)
-        use_adx = self._filters.get("use_adx", True)
-        adx_threshold = 30  # kept consistent with backtest_settings default
-
-        # Step 1 — sigmoid regime probability
-        df["regime_prob"] = 1.0 / (
+        regime_prob = 1.0 / (
             1.0 + np.exp(-k * (df["hybrid_z_score"] - gamma))
         )
-        df["confidence"] = df["regime_prob"]
 
-        # Step 2 — sticky breakout filter
-        binary_entry = (df["regime_prob"] > entry_threshold).astype(int)
-        if use_sticky:
-            sticky = (
-                binary_entry.rolling(window=min_duration).sum() == min_duration
-            ).astype(int)
-        else:
-            sticky = binary_entry
-
-        # Step 3 — direction gate
-        long_cond = df["Close"] > df["dynamic_resistance"]
-        short_cond = df["Close"] < df["dynamic_support"]
-
-        # Step 4 — ADX gate
-        adx_pass = (df["ADX"] > adx_threshold) if use_adx else pd.Series(
-            True, index=df.index
+        return assemble_signal(
+            df,
+            regime_prob=regime_prob,
+            risk_cfg=self._risk,
+            filters_cfg=self._filters,
+            trade_cfg=self._trade,
         )
-
-        # Step 5 — assemble signal column
-        df["signal"] = 0
-        df.loc[sticky.astype(bool) & long_cond & adx_pass, "signal"] = 1
-        df.loc[sticky.astype(bool) & short_cond & adx_pass, "signal"] = -1
-
-        return df
 
     # ------------------------------------------------------------------
     # Private helpers

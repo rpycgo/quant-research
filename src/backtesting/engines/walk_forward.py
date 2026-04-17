@@ -314,6 +314,18 @@ class WalkForwardRunner:
                 logger.warning("Window %s: fit() returned empty results.", label)
                 return None
 
+        # R-hat convergence check for MCMC models
+        if isinstance(param_summary, pd.DataFrame) and not param_summary.empty:
+            if "r_hat" in param_summary.columns:
+                max_rhat = float(param_summary["r_hat"].max())
+                if max_rhat > 1.01:
+                    logger.warning(
+                        "Window %s: max R-hat=%.3f > 1.01 — convergence failed, skipping.",
+                        label, max_rhat,
+                    )
+                    return None
+                logger.debug("Window %s: max R-hat=%.3f ✓", label, max_rhat)
+
         # Predict
         try:
             signal_df = self._model.predict(test_slice, mean_params)

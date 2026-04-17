@@ -55,6 +55,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Bootstrap confidence level (default 0.95 = 95%% CI).",
     )
     parser.add_argument(
+        "--start", type=str, default=None,
+        help="Filter trades from this date (ISO-8601, e.g. 2024-01-01).",
+    )
+    parser.add_argument(
+        "--end", type=str, default=None,
+        help="Filter trades up to this date (ISO-8601, e.g. 2025-12-31).",
+    )
+    parser.add_argument(
         "--no-subperiods", action="store_true",
         help="Skip subperiod analysis.",
     )
@@ -124,6 +132,16 @@ def main() -> int:
         return 1
 
     log.info("Loaded %d trades.", len(trades))
+
+    # Filter by --start / --end if provided
+    if args.start or args.end:
+        trades["entry_time"] = pd.to_datetime(trades["entry_time"])
+        if args.start:
+            trades = trades[trades["entry_time"] >= args.start].reset_index(drop=True)
+            log.info("Filtered from %s → %d trades.", args.start, len(trades))
+        if args.end:
+            trades = trades[trades["entry_time"] <= args.end].reset_index(drop=True)
+            log.info("Filtered to %s → %d trades.", args.end, len(trades))
 
     # ------------------------------------------------------------------
     # Bootstrap CI

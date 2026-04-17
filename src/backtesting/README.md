@@ -18,8 +18,8 @@ backtesting/
 │   └── crypto/         CryptoLoader (Binance / local CSV) + CryptoPreprocessor
 ├── engines/            GenericBacktestEngine · WalkForwardRunner · PerformanceAnalyzer
 ├── models/
-│   ├── adapters/       mdrs_sde, garch, simple_breakout, ma_crossover,
-│   │                   rsi, hmm_regime, dl_regime
+│   ├── adapters/       mdrs_sde, dl_regime, hmm_regime (share _regime_gates);
+│   │                   garch, simple_breakout, ma_crossover, rsi (pure rules)
 │   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
 ```
@@ -29,6 +29,8 @@ backtesting/
 - **Model layer** owns all model-specific logic: signal generation, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
 - **Engine layer** owns execution: TP / SL / trailing stop / time-out. It knows nothing about the model that generated the signals.
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
+- **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`) share a common downstream pipeline (sticky filter → ADX gate → QPB gate) via `_regime_gates.assemble_signal`, ensuring fair comparison under identical execution conditions.
+- **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline, preserving their original literature semantics.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
 
@@ -40,20 +42,20 @@ backtesting/
 
 | Model key | Asset | Adapter | Notes |
 |---|---|---|---|
-| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, event-zone training |
+| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, event-zone training, sticky/ADX/QPB |
 
 ### Benchmark models
 
-| Model key | Asset | Adapter | Notes |
-|---|---|---|---|
-| `garch_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `GarchCryptoAdapter` | GARCH(1,1), fixed TP/SL |
-| `simple_breakout_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `SimpleBreakoutAdapter` | 288-period rolling high/low |
-| `ma_crossover_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MACrossoverAdapter` | EMA(12)/EMA(26) |
-| `rsi_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `RSIAdapter` | RSI(14), oversold 30 / overbought 70 |
-| `hmm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `HMMRegimeAdapter` | 2-state Gaussian HMM |
-| `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | LSTM |
-| `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | TCN |
-| `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | Transformer |
+| Model key | Asset | Adapter | Pipeline | Notes |
+|---|---|---|---|---|
+| `garch_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `GarchCryptoAdapter` | pure rule | GARCH(1,1), fixed TP/SL |
+| `simple_breakout_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `SimpleBreakoutAdapter` | pure rule | 288-period rolling high/low |
+| `ma_crossover_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MACrossoverAdapter` | pure rule | EMA(12)/EMA(26) |
+| `rsi_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `RSIAdapter` | pure rule | RSI(14), 30/70 thresholds |
+| `hmm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `HMMRegimeAdapter` | sticky/ADX/QPB | 2-state Gaussian HMM |
+| `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | LSTM |
+| `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | TCN |
+| `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | Transformer |
 
 ---
 
@@ -102,8 +104,12 @@ re-fitting required.
 ### Ablation study
 
 ```bash
-# Full model
+# Full model (sticky + ADX + QPB, v1.17 reference)
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
+
+# w/o QPB gate (v1.16-equivalent behaviour)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
+    --override filters.qpb.enabled=false
 
 # w/o sticky filter
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
@@ -112,7 +118,8 @@ qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
 
 # Base model (all filters off)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky --no-adx
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky --no-adx \
+    --override filters.qpb.enabled=false
 ```
 
 ### Statistical validation
@@ -161,6 +168,12 @@ use_sticky         = true   # sticky breakout persistence filter
 use_adx            = true   # ADX gate
 only_selected_zone = false
 
+[filters.qpb]
+enabled              = true   # Quiet Pre-Breakout microstructure gate
+past_vol_48b_max     = 0.003  # 4h log-return std cap
+aligned_pret_48b_max = 0.02   # direction-aligned 4h return cap
+d_rv_90d_max         = 0.55   # 90d annualised realised vol cap
+
 [walk_forward_settings]
 training_months = 3
 testing_months  = 1
@@ -176,6 +189,31 @@ sl_short                  = 0.025
 trailing_stop_start_ratio = 0.02
 max_hold_hours            = 720
 ```
+
+The `[filters.*]` settings apply only to **regime-probability based
+adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`). Rule-based adapters
+(`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as
+self-contained technical rules and ignore these settings.
+
+---
+
+## Cross-asset generalization
+
+The QPB gate thresholds in the default configuration are calibrated on
+BTC/USDT 2020-2025. Applying identical absolute thresholds to ETH, SOL,
+or XRP does not reproduce BTC-level risk-adjusted performance, because
+each asset has a distinct volatility distribution (e.g. ETH median 90d
+realised vol ≈ 0.77 versus BTC ≈ 0.52), so a BTC-fit threshold occupies
+a different informational quantile on a more volatile asset.
+
+For non-BTC assets, users should either:
+
+- disable the gate (`filters.qpb.enabled = false`) and run baseline PAITS, or
+- recalibrate `past_vol_48b_max`, `aligned_pret_48b_max`, and
+  `d_rv_90d_max` on the target asset via in-sample grid search.
+
+Cross-asset results under BTC-calibrated thresholds are reported in the
+companion paper's appendix.
 
 ---
 
@@ -202,6 +240,10 @@ class MyModelAdapter(BaseModel):
         # Must return DataFrame with signal (int) and confidence (float) columns
         ...
 ```
+
+For regime-probability models, delegate the downstream filtering to
+`backtesting.models.adapters._regime_gates.assemble_signal` to share
+the canonical sticky / ADX / QPB pipeline.
 
 **Step 3** — Register in `src/backtesting/models/registry.py`.
 

@@ -10,9 +10,9 @@ Responsibilities
 * **fit()** — loads the pre-trained checkpoint for the current WFA window.
   No actual training happens here; training is performed offline by
   ``dl-regime/run_train.py``.
-* **predict()** — runs inference to produce ``regime_prob``, applies the
-  same sticky filter + ADX gate used by MDRS-SDE, and maps results to
-  ``signal`` / ``confidence`` columns.
+* **predict()** — runs inference to produce ``regime_prob`` and delegates
+  the downstream filtering pipeline (sticky / ADX / QPB) to
+  :func:`_regime_gates.assemble_signal` for parity with MDRS-SDE and HMM.
 
 This adapter enables direct comparison of DL baselines against MDRS-SDE
 within the same WalkForwardRunner and GenericBacktestEngine, ensuring
@@ -36,18 +36,17 @@ import torch
 from sklearn.preprocessing import StandardScaler
 
 from backtesting.core.base_model import BaseModel
+from backtesting.models.adapters._regime_gates import assemble_signal
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_MIN_DURATION = 5
 
 
 class DlRegimeCryptoAdapter(BaseModel):
     """Adapter for pre-trained DL regime detection models.
 
     Loads per-window checkpoints produced by ``dl-regime`` WFA training
-    and generates trading signals using the same filtering logic as
-    MDRS-SDE (sticky filter + ADX gate + direction gate).
+    and generates trading signals using the shared sticky / ADX / QPB
+    pipeline (identical to MDRS-SDE and HMM).
 
     DL models use fixed execution parameters from config (no SNR or
     vol_quality scaling) since they lack MCMC posterior estimates.
@@ -140,13 +139,10 @@ class DlRegimeCryptoAdapter(BaseModel):
         ) -> pd.DataFrame:
         """Generate trading signals from the DL model's regime probability.
 
-        Pipeline (mirrors MDRS-SDE for fair comparison):
-
-        1. DL inference → ``regime_prob`` in [0, 1].
-        2. Sticky-breakout persistence filter.
-        3. Direction gate (Close vs dynamic_resistance / dynamic_support).
-        4. ADX gate.
-        5. Map to ``signal`` (1 / -1 / 0) and ``confidence``.
+        Runs DL inference to obtain ``regime_prob`` and delegates the
+        downstream filtering pipeline (sticky / ADX / QPB) to
+        :func:`_regime_gates.assemble_signal` for parity with MDRS-SDE
+        and HMM.
 
         Args:
             test_data: Out-of-sample ``DataFrame``.
@@ -164,43 +160,17 @@ class DlRegimeCryptoAdapter(BaseModel):
             df["regime_prob"] = 0.5
             return df
 
-        # Step 1 — DL inference → (n,) sigmoid regime_prob
-        regime_prob = self._run_inference(model, df)
-        df["regime_prob"] = regime_prob
-        df["confidence"]  = regime_prob
-
-        # Step 2 — sticky filter (mirrors MDRS-SDE for fair comparison)
-        entry_thr  = self._risk.get("entry_probability_threshold", 0.5)
-        min_dur    = self._risk.get("minimum_signal_duration", _DEFAULT_MIN_DURATION)
-        use_sticky = self._filters.get("use_sticky", True)
-        use_adx    = self._filters.get("use_adx", True)
-        adx_thr    = self._trade.get("adx_threshold", 30)
-
-        binary = (df["regime_prob"] > entry_thr).astype(int)
-        if use_sticky:
-            sticky = (
-                binary.rolling(window=min_dur).sum() == min_dur
-            ).astype(int)
-        else:
-            sticky = binary
-
-        # Step 3 — direction gate (identical to MDRS-SDE for fair comparison)
-        long_cond  = df["Close"] > df["dynamic_resistance"]
-        short_cond = df["Close"] < df["dynamic_support"]
-
-        # Step 4 — ADX gate
-        adx_pass = (
-            df["ADX"] > adx_thr
-            if use_adx
-            else pd.Series(True, index=df.index)
+        regime_prob = pd.Series(
+            self._run_inference(model, df), index=df.index
         )
 
-        # Step 5 — signal assembly
-        df["signal"] = 0
-        df.loc[sticky.astype(bool) & long_cond  & adx_pass, "signal"] =  1
-        df.loc[sticky.astype(bool) & short_cond & adx_pass, "signal"] = -1
-
-        return df
+        return assemble_signal(
+            df,
+            regime_prob=regime_prob,
+            risk_cfg=self._risk,
+            filters_cfg=self._filters,
+            trade_cfg=self._trade,
+        )
 
     # ------------------------------------------------------------------
     # Private helpers

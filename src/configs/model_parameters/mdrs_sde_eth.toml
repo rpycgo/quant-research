@@ -5,7 +5,10 @@
 
 [sde_priors]
 gamma_mu    = 3.0
-gamma_lower = 1.5
+gamma_lower = 1.0
 
 [mcmc_settings]
 draws = 2000
+
+[initial_values]
+gamma = 2.0

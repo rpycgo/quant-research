@@ -20,9 +20,12 @@
 # volatility profile compared to the generic default (gamma_mu = 3.0).
 [sde_priors]
 gamma_mu    = 3.0   # tighter breakout threshold for BTC (default: 3.0)
-gamma_lower = 1.5   # keep consistent with tighter mu
+gamma_lower = 1.0   # keep consistent with tighter mu
 
 # Example: increase MCMC draws for production runs; reduce for fast
 # experimentation by temporarily overriding via CLI or a separate file.
 [mcmc_settings]
 draws = 2000        # default: 2000 — raise to 3000 for final production run
+
+[initial_values]
+gamma = 2

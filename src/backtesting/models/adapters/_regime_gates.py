@@ -7,13 +7,15 @@ regime-probability based adapters (MDRS-SDE, DL-regime, HMM).
 Rule-based baseline adapters (simple_breakout, ma_crossover, rsi) are
 evaluated as self-contained technical rules and do not use this module.
 
-Why a shared helper?
+QPB mode interaction
 --------------------
-Fair comparison of regime-probability models requires that they share
-the downstream filtering pipeline. Duplicating the logic across three
-adapters introduces drift risk. This module centralises the three
-filtering layers so that every regime-probability adapter applies
-them identically.
+The static QPB gate here only operates when
+``filters.qpb.mode == "static"`` (the default for backward compatibility).
+In ``walkforward`` mode, this signal-level gate is intentionally
+bypassed so that ``WalkForwardRunner._apply_wf_qpb`` can perform
+trade-level threshold estimation on the raw baseline trade set rather
+than on a statically pre-filtered subset. Applying both gates would
+otherwise produce a degenerate double-filtering effect.
 """
 from __future__ import annotations
 
@@ -72,23 +74,24 @@ def compute_qpb_mask(
     short_cond: pd.Series,
     qpb_cfg: dict[str, Any],
     ) -> pd.Series:
-    """Return a boolean mask satisfying the three QPB conditions.
+    """Return a boolean mask satisfying the three QPB conditions at signal bars.
 
-    The Quiet Pre-Breakout (QPB) gate restricts entries to bars where:
-
-    * ``past_vol_48b < past_vol_48b_max``         (local calm)
-    * ``sign * past_ret_48b < aligned_pret_48b_max`` (no overextension)
-    * ``d_rv_90d_proxy < d_rv_90d_max``           (non-extreme long vol)
-
-    where ``sign`` is ``+1`` on long-condition bars, ``-1`` on short-
-    condition bars, and ``0`` elsewhere.
-
-    When ``qpb_cfg['enabled']`` is False or missing, the mask is all-True.
+    The static QPB gate is applied only when
+    ``qpb_cfg['enabled'] is True`` AND ``qpb_cfg['mode'] == 'static'``.
+    In ``walkforward`` mode the mask is all-True; threshold filtering
+    is performed later by ``WalkForwardRunner._apply_wf_qpb`` at trade
+    level.
 
     Raises:
-        KeyError: If any of the required feature columns are missing.
+        KeyError: If static mode is active and any of the required
+            feature columns are missing.
     """
     if not qpb_cfg.get("enabled", False):
+        return pd.Series(True, index=df.index)
+
+    # In walk-forward mode, skip the signal-level gate entirely.
+    mode = qpb_cfg.get("mode", "static")
+    if mode == "walkforward":
         return pd.Series(True, index=df.index)
 
     required = {"past_vol_48b", "past_ret_48b", "d_rv_90d_proxy"}
@@ -124,31 +127,12 @@ def assemble_signal(
     filters_cfg: dict[str, Any],
     trade_cfg: dict[str, Any],
     ) -> pd.DataFrame:
-    """Apply the full sticky + ADX + QPB pipeline and assemble the signal.
+    """Apply the sticky + ADX + (static) QPB pipeline and assemble the signal.
 
-    The pipeline is:
-        1. Sticky persistence filter on *regime_prob*.
-        2. Direction gate from ``Close`` vs ``dynamic_resistance`` /
-           ``dynamic_support``.
-        3. ADX gate.
-        4. QPB gate.
-        5. Final signal assembly (+1 / -1 / 0).
-
-    Args:
-        df: DataFrame containing ``Close``, ``ADX``,
-            ``dynamic_resistance``, ``dynamic_support`` and — if QPB is
-            enabled — ``past_vol_48b``, ``past_ret_48b``,
-            ``d_rv_90d_proxy``.
-        regime_prob: Series of regime probabilities aligned to ``df``.
-        risk_cfg: Parsed ``[risk_management]`` section.
-        filters_cfg: Parsed ``[filters]`` section (with optional nested
-            ``[filters.qpb]`` sub-section).
-        trade_cfg: Parsed ``[trading_parameters]`` section (used for
-            ``adx_threshold``).
-
-    Returns:
-        *df* with ``regime_prob``, ``confidence``, and ``signal`` columns
-        added / overwritten.
+    When ``filters_cfg['qpb']['mode'] == 'walkforward'``, the QPB step
+    is a no-op at signal level; the walk-forward layer in
+    ``WalkForwardRunner`` handles threshold filtering at trade level
+    instead.
     """
     df = df.copy()
     df["regime_prob"] = regime_prob

@@ -53,7 +53,6 @@ testing_months  = 1
 parallel_jobs   = 10
 start_date      = "2020-04-01"
 end_date        = "2025-12-31"
-ema_sigma_span  = 3
 
 [trading_parameters]
 tp_long                   = 0.06

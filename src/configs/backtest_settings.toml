@@ -58,14 +58,14 @@ ema_sigma_span  = 3
 [trading_parameters]
 tp_long                   = 0.06
 sl_long                   = 0.03
-tp_short                  = 0.05
-sl_short                  = 0.025
-trailing_stop_start_ratio = 0.02
+tp_short                  = 0.06
+sl_short                  = 0.03
+trailing_stop_start_ratio = 0.00
 max_hold_hours            = 720
 adx_threshold             = 30
 
 [risk_management]
 minimum_signal_duration        = 5
-break_even_trigger_ratio_long  = 0.7
+break_even_trigger_ratio_long  = 0.3
 break_even_trigger_ratio_short = 0.3
 entry_probability_threshold    = 0.5

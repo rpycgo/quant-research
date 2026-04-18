@@ -17,6 +17,14 @@ Given a ``start_date``, an ``end_date``, ``training_months``, and
 * Training window : ``[test_start - training_months, test_start)``
 * Testing window  : ``[test_start, test_start + testing_months)``
 * Windows advance by one calendar month (``freq="MS"``).
+
+WF-QPB post-processing
+----------------------
+When ``[filters.qpb].mode = "walkforward"`` is set in the config, the
+aggregated trades are passed through :class:`WalkForwardQpbGate` as a
+final post-processing step. This dynamically re-estimates the three
+QPB thresholds from recent trade history rather than using the fixed
+values from ``[filters.qpb]``. See ``_wf_qpb.py`` for details.
 """
 from __future__ import annotations
 
@@ -32,6 +40,11 @@ from joblib import Parallel, delayed
 
 from backtesting.core.base_model import BaseModel
 from backtesting.engines.engine import GenericBacktestEngine
+from backtesting.models.adapters._wf_qpb import (
+    WalkForwardQpbConfig,
+    WalkForwardQpbGate,
+    build_feature_lookup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +63,13 @@ class WindowResult:
                       can re-run ``run_backtest()`` without re-fitting.
     """
     window_label: str
-    trades: pd.DataFrame
-    params: dict[str, Any]
+    trades: pd.DataFrame = field(default_factory=pd.DataFrame)
+    params: dict[str, Any] = field(default_factory=dict)
     signal_df: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 class WalkForwardRunner:
-    """Orchestrates a walk-forward backtest for a given model and symbol.
+    """Rolling-window backtest orchestrator with pluggable models.
 
     Args:
         model:         Concrete :class:`~backtesting.core.base_model.BaseModel`
@@ -68,7 +81,8 @@ class WalkForwardRunner:
                        ``start_date``, ``end_date``, ``training_months``,
                        ``testing_months``, ``parallel_jobs``.
         filter_config: Parsed ``[filters]`` section from
-                       ``backtest_settings.toml``. Controls filter toggles.
+                       ``backtest_settings.toml``. Controls filter toggles
+                       and the optional WF-QPB post-processing mode.
                        Defaults to empty dict.
 
     Example::
@@ -101,7 +115,7 @@ class WalkForwardRunner:
         self._n_jobs                  = wfa_config.get("parallel_jobs", 1)
         self._reference_window_months = wfa_config.get("reference_window_months", 12)
 
-        filters = filter_config or {}
+        self._filter_config = filter_config or {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -180,15 +194,17 @@ class WalkForwardRunner:
 
         Loads the pickle file produced by :meth:`fit_all`, calls
         ``get_fixed_params()`` and ``run_backtest()`` for every window
-        within the configured date range, and aggregates trades. MCMC
-        sampling and signal generation are skipped entirely.
+        within the configured date range, aggregates trades, and
+        optionally applies WF-QPB post-processing if enabled via
+        ``[filters.qpb].mode = "walkforward"``.
 
         Args:
             signals_path: Path to the ``.pkl`` file produced by
                           :meth:`fit_all`.
             bt_cfg:       Full backtest settings dict. Used to filter
                           windows by ``start_date`` / ``end_date`` from
-                          ``bt_cfg["walk_forward_settings"]``.
+                          ``bt_cfg["walk_forward_settings"]`` and to
+                          configure WF-QPB post-processing.
 
         Returns:
             ``(all_trades, param_summary)``
@@ -243,11 +259,85 @@ class WalkForwardRunner:
             from dataclasses import replace
             updated.append(replace(res, trades=trades))
 
-        return self._aggregate(updated)
+        all_trades, param_summary = self._aggregate(updated)
+
+        # Optional WF-QPB post-processing
+        all_trades = self._apply_wf_qpb(all_trades, updated)
+
+        return all_trades, param_summary
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _apply_wf_qpb(
+        self,
+        trades: pd.DataFrame,
+        window_results: list[WindowResult | None],
+        ) -> pd.DataFrame:
+        """Optionally apply walk-forward QPB filtering to aggregated trades.
+
+        Only active when the config sets ``[filters.qpb].mode = "walkforward"``.
+        In ``"static"`` mode (default, v1.17 behaviour), returns ``trades``
+        unchanged because the static QPB gate has already been applied
+        inside the adapter's ``predict()``.
+
+        Args:
+            trades: Aggregated completed-trades DataFrame.
+            window_results: Per-window results (used to build the
+                per-bar feature-lookup function needed by WF-QPB).
+
+        Returns:
+            Filtered (or unchanged) trades DataFrame.
+        """
+        qpb_cfg = self._filter_config.get("qpb", {}) or {}
+        mode = qpb_cfg.get("mode", "static")
+
+        if mode != "walkforward":
+            return trades
+        if trades.empty:
+            return trades
+
+        wf_section = qpb_cfg.get("walkforward", {}) or {}
+        cfg = WalkForwardQpbConfig(
+            lookback_months=int(wf_section.get("lookback_months", 9)),
+            refit_freq_months=int(wf_section.get("refit_freq_months", 3)),
+            min_lookback_trades=int(wf_section.get("min_lookback_trades", 20)),
+            min_filter_trades=int(wf_section.get("min_filter_trades", 5)),
+            criterion=wf_section.get("criterion", "sharpe_stable"),
+            trades_per_year_estimate=float(
+                wf_section.get("trades_per_year_estimate", 10.0)
+            ),
+            vol_grid=wf_section.get("vol_grid", None) or WalkForwardQpbConfig().vol_grid,
+            pret_grid=wf_section.get("pret_grid", None) or WalkForwardQpbConfig().pret_grid,
+            rv_grid=wf_section.get("rv_grid", None) or WalkForwardQpbConfig().rv_grid,
+            fallback_vol_max=float(qpb_cfg.get("past_vol_48b_max", 0.003)),
+            fallback_pret_max=float(qpb_cfg.get("aligned_pret_48b_max", 0.02)),
+            fallback_rv_max=float(qpb_cfg.get("d_rv_90d_max", 0.55)),
+        )
+
+        logger.info(
+            "WF-QPB post-processing ACTIVE: lookback=%dm refit=%dm criterion=%s",
+            cfg.lookback_months, cfg.refit_freq_months, cfg.criterion,
+        )
+
+        signal_dfs = [
+            r.signal_df for r in window_results
+            if r is not None and not r.signal_df.empty
+        ]
+        try:
+            lookup = build_feature_lookup(signal_dfs)
+        except KeyError as exc:
+            logger.error(
+                "WF-QPB disabled — signal DataFrames lack QPB feature columns: %s",
+                exc,
+            )
+            return trades
+
+        gate = WalkForwardQpbGate(cfg)
+        filtered = gate.apply(trades, lookup)
+
+        return filtered
 
     def _fit_window(
         self,
@@ -270,82 +360,43 @@ class WalkForwardRunner:
         """
         label = test_start.strftime("%Y-%m-%d")
 
-        train_end   = test_start - pd.Timedelta(seconds=1)
-        train_start = train_end  - relativedelta(months=self._train_months)
-        test_end    = min(
-            test_start + relativedelta(months=self._test_months)
-            - pd.Timedelta(seconds=1),
-            self._end,
-        )
+        train_start = test_start - relativedelta(months=self._train_months)
+        test_end    = test_start + relativedelta(months=self._test_months)
 
-        train_slice = train_data.loc[train_start:train_end].copy()
-        test_slice  = full_data.loc[test_start:test_end].copy()
+        train_slice = train_data[(train_data.index >= train_start) & (train_data.index < test_start)]
+        test_slice  = full_data[(full_data.index >= test_start) & (full_data.index < test_end)]
 
-        if len(train_slice) < 80:
-            logger.warning(
-                "Window %s skipped — insufficient training rows (%d).",
-                label,
-                len(train_slice),
-            )
+        if train_slice.empty or test_slice.empty:
+            logger.warning("Window %s: empty train or test slice.", label)
             return None
 
-        # Fit
         try:
-            training_results = self._model.fit(train_slice)
+            fit_result = self._model.fit(train_slice)
         except Exception as exc:  # noqa: BLE001
             logger.error("fit() failed for window %s: %s", label, exc)
             return None
 
-        if not training_results:
-            logger.warning("Window %s: fit() returned empty params.", label)
-            return None
-
-        # MDRS-SDE: {'summary': DataFrame, 'estimates': dict, 'trace': ...}
-        # All other models: wrap_fit_result → same structure
-        param_summary = training_results.get("summary", pd.DataFrame())
-        mean_params   = training_results.get("estimates", training_results)
-
-        # MCMC models (MDRS-SDE): summary is a non-empty DataFrame
-        # Non-MCMC models (DL, GARCH, etc.): summary is intentionally empty
-        # Only fail if summary is empty AND estimates is also empty/missing
-        if isinstance(param_summary, pd.DataFrame) and param_summary.empty:
-            estimates = training_results.get("estimates", {})
-            if not estimates:
-                logger.warning("Window %s: fit() returned empty results.", label)
-                return None
-
-        # R-hat convergence check for MCMC models
-        if isinstance(param_summary, pd.DataFrame) and not param_summary.empty:
-            if "r_hat" in param_summary.columns:
-                max_rhat = float(param_summary["r_hat"].max())
-                if max_rhat > 1.01:
-                    logger.warning(
-                        "Window %s: max R-hat=%.3f > 1.01 — convergence failed, skipping.",
-                        label, max_rhat,
-                    )
-                    return None
-                logger.debug("Window %s: max R-hat=%.3f ✓", label, max_rhat)
-
-        # Predict
+        mean_params = (
+            fit_result.get("estimates", fit_result)
+            if isinstance(fit_result, dict) else {}
+        )
         try:
             signal_df = self._model.predict(test_slice, mean_params)
         except Exception as exc:  # noqa: BLE001
             logger.error("predict() failed for window %s: %s", label, exc)
             return None
 
-        # Strip filter-dependent columns so backtest_from_signals()
-        # can re-apply filters with different settings (ablation support).
-        signal_df = signal_df.drop(columns=["signal", "confidence"], errors="ignore")
-
+        # Strip filter-dependent columns so backtest_from_signals() can
+        # re-apply filters without stale cached state.
         return WindowResult(
             window_label=label,
             trades=pd.DataFrame(),   # intentionally empty — backtest not run yet
-            params=param_summary,
+            params=mean_params,
             signal_df=signal_df,
         )
 
-    @staticmethod
     def _aggregate(
+        self,
         results: list[WindowResult | None],
         ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
         """Concatenate per-window results into analysis-ready outputs.

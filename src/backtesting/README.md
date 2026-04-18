@@ -19,6 +19,7 @@ backtesting/
 ├── engines/            GenericBacktestEngine · WalkForwardRunner · PerformanceAnalyzer
 ├── models/
 │   ├── adapters/       mdrs_sde, dl_regime, hmm_regime (share _regime_gates);
+│   │                   _wf_qpb (walk-forward QPB estimator);
 │   │                   garch, simple_breakout, ma_crossover, rsi (pure rules)
 │   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
@@ -29,8 +30,9 @@ backtesting/
 - **Model layer** owns all model-specific logic: signal generation, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
 - **Engine layer** owns execution: TP / SL / trailing stop / time-out. It knows nothing about the model that generated the signals.
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
-- **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`) share a common downstream pipeline (sticky filter → ADX gate → QPB gate) via `_regime_gates.assemble_signal`, ensuring fair comparison under identical execution conditions.
-- **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline, preserving their original literature semantics.
+- **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`) share a common downstream signal-level pipeline (sticky filter → ADX gate → static QPB gate) via `_regime_gates.assemble_signal`, ensuring fair comparison under identical execution conditions.
+- **Trade-level WF-QPB post-processing** (optional) is applied by `WalkForwardRunner` after aggregating per-window trades. It re-estimates the three QPB thresholds from recent completed-trade history rather than using fixed values. See the *QPB modes* section below.
+- **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
 
@@ -73,17 +75,33 @@ qr-backtest --model rsi_btc --symbol BTCUSDT
 qr-backtest --model hmm_btc --symbol BTCUSDT
 qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
 
-# Buy-and-Hold
-qr-buy-and-hold --symbol BTCUSDT --start 2024-01-01 --end 2025-12-31
-
 # List all registered models
 qr-backtest --list-models
+```
+
+### QPB modes
+
+Two QPB modes are supported:
+
+| Mode | Description | When to use |
+|---|---|---|
+| `static` | Fixed thresholds from `[filters.qpb]` | Reproducing v1.17 results, sensitivity analysis, single-asset calibrated runs |
+| `walkforward` | Thresholds re-estimated from trade history | OOS-valid evaluation, default for v1.18+ |
+
+```bash
+# Explicit mode selection via CLI
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
+
+# Disable QPB entirely (v1.16 equivalent)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
 ```
 
 ### Two-phase backtest (fit once, backtest many times)
 
 MCMC sampling is the bottleneck. Use the two-phase API to run fitting
-once and replay the backtest instantly whenever config changes.
+once and replay the backtest instantly whenever config changes. Both
+QPB modes are compatible with `--from-signals`.
 
 ```bash
 # Phase 1 — fit + signal generation (MCMC, runs once, takes time)
@@ -91,25 +109,23 @@ qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --fit-only
 # → results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl
 
 # Phase 2 — backtest only (seconds, repeat freely)
+# Same signals pickle works for any QPB mode
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
-    --from-signals results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl
+    --from-signals results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl \
+    --qpb-mode walkforward
 ```
-
-The `.pkl` file contains per-window `WindowResult` objects with the full
-signal DataFrame (OHLCV + signal + confidence + all feature columns).
-Changing `tp_long`, `sl_long`, or any other execution parameter in
-`backtest_settings.toml` and re-running Phase 2 is sufficient — no
-re-fitting required.
 
 ### Ablation study
 
 ```bash
-# Full model (sticky + ADX + QPB, v1.17 reference)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT
+# Full model (sticky + ADX + static QPB, v1.17 reference)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
 
-# w/o QPB gate (v1.16-equivalent behaviour)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
-    --override filters.qpb.enabled=false
+# Walk-forward QPB
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
+
+# w/o QPB gate
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
 
 # w/o sticky filter
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
@@ -117,9 +133,8 @@ qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
 # w/o ADX gate
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
 
-# Base model (all filters off)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky --no-adx \
-    --override filters.qpb.enabled=false
+# All filters off (pure baseline)
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky --no-adx --no-qpb
 ```
 
 ### Statistical validation
@@ -129,8 +144,7 @@ qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 
 # Custom subperiods
 qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv \
-  --subperiod "Bull 2024,2024-01-01,2024-12-31" \
-  --subperiod "Bull 2025,2025-01-01,2025-12-31"
+  --subperiod "Bull 2024,2024-01-01,2024-12-31"
 ```
 
 ---
@@ -152,42 +166,33 @@ configs/
     └── dl_regime_{lstm,tcn,transformer}_{btc,eth,sol,xrp}.toml
 ```
 
-### 3-layer config resolution
-
-1. **Package default** — `default_config.toml` shipped inside the model package
-2. **Local override** — `configs/model_parameters/<model_key>.toml` — only differing keys
-3. **Shared infra** — `configs/backtest_settings.toml` and `configs/data_settings.toml`
-
 ### Key settings
 
 ```toml
 # backtest_settings.toml
 
 [filters]
-use_sticky         = true   # sticky breakout persistence filter
-use_adx            = true   # ADX gate
+use_sticky         = true
+use_adx            = true
 only_selected_zone = false
 
 [filters.qpb]
-enabled              = true   # Quiet Pre-Breakout microstructure gate
-past_vol_48b_max     = 0.003  # 4h log-return std cap
-aligned_pret_48b_max = 0.02   # direction-aligned 4h return cap
-d_rv_90d_max         = 0.55   # 90d annualised realised vol cap
+mode                 = "walkforward"  # "static" | "walkforward"
+enabled              = true           # gate on/off (static mode)
+past_vol_48b_max     = 0.003          # static thresholds / WF fallback
+aligned_pret_48b_max = 0.02
+d_rv_90d_max         = 0.55
 
-[walk_forward_settings]
-training_months = 3
-testing_months  = 1
-parallel_jobs   = 10
-start_date      = "2020-04-01"
-end_date        = "2025-12-31"
-
-[trading_parameters]
-tp_long                   = 0.06
-sl_long                   = 0.03
-tp_short                  = 0.05
-sl_short                  = 0.025
-trailing_stop_start_ratio = 0.02
-max_hold_hours            = 720
+[filters.qpb.walkforward]
+lookback_months           = 9
+refit_freq_months         = 3
+min_lookback_trades       = 20
+min_filter_trades         = 5
+criterion                 = "sharpe_stable"  # sharpe | mean | sortino | sharpe_stable
+trades_per_year_estimate  = 10.0
+vol_grid  = [0.002, 0.0025, 0.003, 0.0035, 0.004, 0.005]
+pret_grid = [0.015, 0.020, 0.025, 0.030, 0.040, 0.050]
+rv_grid   = [0.45, 0.50, 0.55, 0.60, 0.70, 0.85]
 ```
 
 The `[filters.*]` settings apply only to **regime-probability based

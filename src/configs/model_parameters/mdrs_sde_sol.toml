@@ -3,8 +3,11 @@
 # Local override for the MDRS-SDE model on SOLUSDT futures.
 
 [sde_priors]
-gamma_mu    = 3.0
-gamma_lower = 1.5
+gamma_mu    = 3
+gamma_lower = 1.0
 
 [mcmc_settings]
 draws = 2000
+
+[initial_values]
+gamma = 3

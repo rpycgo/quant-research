@@ -1,0 +1,30 @@
+# configs/model_parameters/lgbm_btc.toml
+#
+# LightGBM regime detection model — BTC/USDT
+#
+# General-purpose supervised classifier trained on the full in-sample
+# train_slice. No domain-specific filtering is applied — LightGBM
+# discovers informative features (including hybrid_z_score) via
+# feature importance rather than hard thresholds.
+
+[lgbm_settings]
+input_features = [
+    "hybrid_z_score",
+    "volume_z_score",
+    "absolute_return_z_score",
+    "log_return",
+    "direction_indicator",
+    "ADX",
+]
+
+# Label horizon: N bars forward for direction-aligned return label
+# 12 bars = 1 hour at 5-minute resolution
+label_horizon = 12
+
+# LightGBM hyperparameters
+n_estimators      = 100
+learning_rate     = 0.1
+max_depth         = -1
+num_leaves        = 31
+min_child_samples = 20
+random_seed       = 42

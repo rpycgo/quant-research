@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from backtesting.core.base_model import BaseModel
 from backtesting.core.config_loader import BacktestConfigLoader
 from backtesting.models.adapters.dl_regime import DlRegimeCryptoAdapter
+from backtesting.models.adapters.lgbm_regime import LGBMRegimeAdapter
 from backtesting.models.adapters.garch import GarchCryptoAdapter
 from backtesting.models.adapters.hmm_regime import HMMRegimeAdapter
 from backtesting.models.adapters.ma_crossover import MACrossoverAdapter
@@ -111,6 +112,11 @@ _REGISTRY: dict[str, ModelEntry] = {
     "dl_regime_transformer_eth": ModelEntry(DlRegimeCryptoAdapter),
     "dl_regime_transformer_sol": ModelEntry(DlRegimeCryptoAdapter),
     "dl_regime_transformer_xrp": ModelEntry(DlRegimeCryptoAdapter),
+    # LightGBM
+    "lgbm_btc":                  ModelEntry(LGBMRegimeAdapter),
+    "lgbm_eth":                  ModelEntry(LGBMRegimeAdapter),
+    "lgbm_sol":                  ModelEntry(LGBMRegimeAdapter),
+    "lgbm_xrp":                  ModelEntry(LGBMRegimeAdapter),
 }
 
 

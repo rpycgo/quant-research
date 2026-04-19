@@ -1,6 +1,6 @@
 [project]
 name = "quant-research"
-version = "1.18.0"
+version = "1.19.0"
 description = "Quantitative research and backtesting platform"
 authors = [{ name = "rpycgo", email = "skyd0608@gmail.com" }]
 requires-python = ">=3.12,<3.14"
@@ -20,6 +20,7 @@ dependencies = [
     "joblib>=1.5.3",
     "hmmlearn>=0.3.3",
     "arch>=8.0.0",
+    "lightgbm>=4.6.0",
 ]
 
 [project.scripts]

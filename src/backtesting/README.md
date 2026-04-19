@@ -58,6 +58,7 @@ backtesting/
 | `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | LSTM |
 | `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | TCN |
 | `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | Transformer |
+| `lgbm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `LGBMRegimeAdapter` | sticky/ADX/QPB | LightGBM binary classifier, full train_slice |
 
 ---
 
@@ -74,6 +75,7 @@ qr-backtest --model ma_crossover_btc --symbol BTCUSDT
 qr-backtest --model rsi_btc --symbol BTCUSDT
 qr-backtest --model hmm_btc --symbol BTCUSDT
 qr-backtest --model dl_regime_lstm_btc --symbol BTCUSDT
+qr-backtest --model lgbm_btc --symbol BTCUSDT
 
 # List all registered models
 qr-backtest --list-models
@@ -163,7 +165,8 @@ configs/
     ├── ma_crossover_{btc,eth,sol,xrp}.toml
     ├── rsi_{btc,eth,sol,xrp}.toml
     ├── hmm_{btc,eth,sol,xrp}.toml
-    └── dl_regime_{lstm,tcn,transformer}_{btc,eth,sol,xrp}.toml
+    ├── dl_regime_{lstm,tcn,transformer}_{btc,eth,sol,xrp}.toml
+    └── lgbm_{btc,eth,sol,xrp}.toml
 ```
 
 ### Key settings

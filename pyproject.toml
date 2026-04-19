@@ -20,6 +20,7 @@ dependencies = [
     "joblib>=1.5.3",
     "hmmlearn>=0.3.3",
     "arch>=8.0.0",
+    "lightgbm>=4.6.0",
 ]
 
 [project.scripts]

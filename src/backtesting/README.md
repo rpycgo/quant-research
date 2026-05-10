@@ -20,6 +20,7 @@ backtesting/
 ├── models/
 │   ├── adapters/       mdrs_sde, dl_regime, hmm_regime (share _regime_gates);
 │   │                   _wf_qpb (walk-forward QPB estimator);
+│   │                   _event_rate (PAITS-Event gate, v1.20+);
 │   │                   garch, simple_breakout, ma_crossover, rsi (pure rules)
 │   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
@@ -32,6 +33,7 @@ backtesting/
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
 - **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`) share a common downstream signal-level pipeline (sticky filter → ADX gate → static QPB gate) via `_regime_gates.assemble_signal`, ensuring fair comparison under identical execution conditions.
 - **Trade-level WF-QPB post-processing** (optional) is applied by `WalkForwardRunner` after aggregating per-window trades. It re-estimates the three QPB thresholds from recent completed-trade history rather than using fixed values. See the *QPB modes* section below.
+- **PAITS-Event gate** is an alternative post-processing mode that replaces the QPB envelope with a bar-level threshold on `rolling_max(regime_prob, 12h)`, recomputed each month by bisection so that the cooldown-adjusted event rate matches a target rate. See the *QPB modes* section below.
 - **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
@@ -83,21 +85,47 @@ qr-backtest --list-models
 
 ### QPB modes
 
-Two QPB modes are supported:
+Three QPB modes are supported:
 
 | Mode | Description | When to use |
 |---|---|---|
 | `static` | Fixed thresholds from `[filters.qpb]` | Reproducing v1.17 results, sensitivity analysis, single-asset calibrated runs |
-| `walkforward` | Thresholds re-estimated from trade history | OOS-valid evaluation, default for v1.18+ |
+| `walkforward` | Thresholds re-estimated from trade history (grid search) | OOS-valid evaluation, default for v1.18–v1.19 |
+| `event_rate` | PAITS-Event gate (v1.20+); bisection threshold on rolling-max regime_prob, target events/month | Cross-asset robust evaluation, paper-consistent walk-forward (lookback = Bayesian train window) |
 
 ```bash
 # Explicit mode selection via CLI
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode event_rate
 
 # Disable QPB entirely (v1.16 equivalent)
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
 ```
+
+#### PAITS-Event mode (v1.20+)
+
+Set `[filters.qpb].mode = "event_rate"` and configure
+`[filters.qpb.event_rate]`:
+
+```toml
+[filters.qpb.event_rate]
+target_events_per_month = 5.0       # primary tuning hyperparameter
+cooldown_days           = 5.0       # 1 trading week
+lookback_days           = 90        # = Bayesian detector training window
+score_window_bars       = 144       # 12h rolling max
+refit_freq              = "ME"      # month-end
+fallback_threshold      = 0.45      # warm-up fallback
+min_lookback_bars       = 100
+```
+
+The gate computes `score_t = rolling_max(regime_prob, score_window_bars)`,
+then at each `refit_freq` boundary bisects over the previous
+`lookback_days` of scores to find the threshold giving exactly
+`target_events_per_month` cooldown-respecting events. No threshold grid
+is hardcoded; the bracket `[score_min, score_max]` is data-driven, so
+the gate transfers across assets without retuning absolute
+`regime_prob` values.
 
 ### Two-phase backtest (fit once, backtest many times)
 

@@ -11,7 +11,9 @@ Supports multiple asset classes and pluggable model architectures through a clea
 ```
 backtesting/
 ├── benchmarks/         BuyAndHoldBenchmark, StatisticalValidator
-├── cli/                qr-backtest, qr-buy-and-hold, qr-validate
+├── cli/                qr-backtest, qr-buy-and-hold, qr-validate,
+│                       qr-frozen-eval, qr-plot-sticky-sweep,
+│                       qr-plot-reliability
 ├── core/               Abstract interfaces (BaseModel, BaseLoader, BaseEngine)
 │                       + 3-layer hierarchical config loader
 ├── assets/
@@ -176,6 +178,78 @@ qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv \
   --subperiod "Bull 2024,2024-01-01,2024-12-31"
 ```
+
+### Frozen-parameter robustness evaluation
+
+`qr-frozen-eval` trains the MCMC regime detector on a single fixed
+training block, freezes all estimated parameters, then evaluates the
+system on the subsequent test period without any re-estimation. The
+performance gap to the rolling walk-forward baseline empirically
+quantifies the value of periodic Bayesian recalibration.
+
+```bash
+qr-frozen-eval \
+    --model       mdrs_sde_btc \
+    --symbol      BTCUSDT \
+    --train-start 2020-01-01 \
+    --train-end   2020-12-31 \
+    --test-start  2021-01-01 \
+    --test-end    2025-12-31 \
+    --config-dir  src/configs \
+    --out         results/frozen_eval.csv
+```
+
+Pipeline: load full OHLCV → slice training block, apply event
+tagging and fit MCMC into a frozen params dict → roll the test block
+month by month, predicting with the frozen params and running the
+standard backtest engine → emit per-month trade CSVs plus a combined
+summary for direct comparison against rolling WFA.
+
+### Figure 1 — Sticky filter threshold sweep
+
+`qr-plot-sticky-sweep` produces the paper's Figure 1, which
+characterises the decision-latency vs. noise-suppression trade-off
+of the Persistence-Aware Stabilization Module.
+
+* Panel A: `d_min` vs Sharpe ratio + total return (%)
+* Panel B: `d_min` vs median entry delay (minutes) + false flip rate
+
+It consumes a directory of trades CSVs produced by running
+`qr-backtest` at different sticky `d_min` values, together with a
+signals pickle from `qr-backtest --fit-only`.
+
+```bash
+qr-plot-sticky-sweep \
+    --trades-dir results/sticky_sweep/ \
+    --signals    results/mdrs_sde_btc_btcusdt_<ts>_signals.pkl \
+    --baseline   5 \
+    --out        results/figure1_sticky_sweep.png
+
+# trades-dir should contain files matching: *duration={N}*.csv
+```
+
+### Figure 2 — Reliability diagram for w(Z_t)
+
+`qr-plot-reliability` produces the paper's Figure 2, the
+reliability diagram for the Bayesian regime weight `w(Z_t)`. It
+checks whether the posterior probability is *calibrated* — i.e.,
+whether predicted probabilities match empirical frequencies of
+direction-aligned breakout continuation under a profitability
+hurdle.
+
+```bash
+qr-plot-reliability \
+    --signals results/mdrs_sde_btc_btcusdt_<ts>_signals.pkl \
+    --price   data/crypto/binance/futures/btcusdt_5m.csv \
+    --horizon 280 \
+    --cost    0.003 \
+    --out     results/figure2_reliability.png
+```
+
+* `--horizon` — forward horizon `H` in bars (default 280 ≈ 23h at 5min)
+* `--cost`    — round-trip cost hurdle `c` (default 0.003 = 0.30%)
+* `--n-bins`  — number of probability bins (default 10)
+* `--subperiod` — optional start date filter (e.g. `2024-01-01`)
 
 ---
 

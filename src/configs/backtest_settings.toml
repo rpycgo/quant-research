@@ -12,10 +12,15 @@ use_adx             = true
 only_selected_zone  = false
 
 [filters.qpb]
-# Quiet Pre-Breakout gate. Two modes:
+# Quiet Pre-Breakout gate. Three modes:
 #   mode = "static"      — absolute thresholds below (v1.17 behaviour)
 #   mode = "walkforward" — threshold estimated from recent trade history
 #                          using [filters.qpb.walkforward] section
+#   mode = "event_rate"  — PAITS-Event gate (v1.20+): bar-level threshold
+#                          on rolling-max regime_prob, recomputed each
+#                          month by bisection so that the cooldown-
+#                          adjusted event rate matches a target rate.
+#                          See [filters.qpb.event_rate] section.
 mode                   = "walkforward"
 
 # Static-mode thresholds (BTC-calibrated 2020-2025). Also used as
@@ -42,6 +47,24 @@ trades_per_year_estimate  = 10.0
 vol_grid  = [0.002, 0.0025, 0.003, 0.0035, 0.004, 0.005]
 pret_grid = [0.015, 0.020, 0.025, 0.030, 0.040, 0.050]
 rv_grid   = [0.45, 0.50, 0.55, 0.60, 0.70, 0.85]
+
+[filters.qpb.event_rate]
+# PAITS-Event gate parameters (v1.20+). Active only when
+# [filters.qpb].mode = "event_rate". Replaces the QPB envelope chain
+# (sticky/ADX/breakout/QPB) with a single bar-level threshold on
+# rolling_max(regime_prob, score_window_bars). The threshold is
+# recomputed at each test-month start by bisection over the previous
+# lookback window so that the cooldown-adjusted event count matches
+# target_events_per_month. This eliminates the threshold-grid
+# hyperparameter set entirely; cross-asset transfer needs no
+# rescaling of absolute regime_prob values.
+target_events_per_month = 5.0       # primary tuning hyperparameter
+cooldown_days           = 5.0       # 1 trading week (natural time unit)
+lookback_days           = 90        # 3 months (= Bayesian detector train window)
+score_window_bars       = 144       # 12h rolling max (= 1 trading session)
+refit_freq              = "ME"      # pandas offset alias (month-end)
+fallback_threshold      = 0.45      # used before lookback fills
+min_lookback_bars       = 100       # warmup gate
 
 [execution_costs]
 commission_rate = 0.0005   # 0.05 % per leg

@@ -11,7 +11,9 @@ Supports multiple asset classes and pluggable model architectures through a clea
 ```
 backtesting/
 ├── benchmarks/         BuyAndHoldBenchmark, StatisticalValidator
-├── cli/                qr-backtest, qr-buy-and-hold, qr-validate
+├── cli/                qr-backtest, qr-buy-and-hold, qr-validate,
+│                       qr-frozen-eval, qr-plot-sticky-sweep,
+│                       qr-plot-reliability
 ├── core/               Abstract interfaces (BaseModel, BaseLoader, BaseEngine)
 │                       + 3-layer hierarchical config loader
 ├── assets/
@@ -20,6 +22,7 @@ backtesting/
 ├── models/
 │   ├── adapters/       mdrs_sde, dl_regime, hmm_regime (share _regime_gates);
 │   │                   _wf_qpb (walk-forward QPB estimator);
+│   │                   _event_rate (PAITS-Event gate, v1.20+);
 │   │                   garch, simple_breakout, ma_crossover, rsi (pure rules)
 │   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
@@ -32,6 +35,7 @@ backtesting/
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
 - **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`) share a common downstream signal-level pipeline (sticky filter → ADX gate → static QPB gate) via `_regime_gates.assemble_signal`, ensuring fair comparison under identical execution conditions.
 - **Trade-level WF-QPB post-processing** (optional) is applied by `WalkForwardRunner` after aggregating per-window trades. It re-estimates the three QPB thresholds from recent completed-trade history rather than using fixed values. See the *QPB modes* section below.
+- **PAITS-Event gate** is an alternative post-processing mode that replaces the QPB envelope with a bar-level threshold on `rolling_max(regime_prob, 12h)`, recomputed each month by bisection so that the cooldown-adjusted event rate matches a target rate. See the *QPB modes* section below.
 - **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
@@ -83,21 +87,47 @@ qr-backtest --list-models
 
 ### QPB modes
 
-Two QPB modes are supported:
+Three QPB modes are supported:
 
 | Mode | Description | When to use |
 |---|---|---|
 | `static` | Fixed thresholds from `[filters.qpb]` | Reproducing v1.17 results, sensitivity analysis, single-asset calibrated runs |
-| `walkforward` | Thresholds re-estimated from trade history | OOS-valid evaluation, default for v1.18+ |
+| `walkforward` | Thresholds re-estimated from trade history (grid search) | OOS-valid evaluation, default for v1.18–v1.19 |
+| `event_rate` | PAITS-Event gate (v1.20+); bisection threshold on rolling-max regime_prob, target events/month | Cross-asset robust evaluation, paper-consistent walk-forward (lookback = Bayesian train window) |
 
 ```bash
 # Explicit mode selection via CLI
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
+qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode event_rate
 
 # Disable QPB entirely (v1.16 equivalent)
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
 ```
+
+#### PAITS-Event mode (v1.20+)
+
+Set `[filters.qpb].mode = "event_rate"` and configure
+`[filters.qpb.event_rate]`:
+
+```toml
+[filters.qpb.event_rate]
+target_events_per_month = 5.0       # primary tuning hyperparameter
+cooldown_days           = 5.0       # 1 trading week
+lookback_days           = 90        # = Bayesian detector training window
+score_window_bars       = 144       # 12h rolling max
+refit_freq              = "ME"      # month-end
+fallback_threshold      = 0.45      # warm-up fallback
+min_lookback_bars       = 100
+```
+
+The gate computes `score_t = rolling_max(regime_prob, score_window_bars)`,
+then at each `refit_freq` boundary bisects over the previous
+`lookback_days` of scores to find the threshold giving exactly
+`target_events_per_month` cooldown-respecting events. No threshold grid
+is hardcoded; the bracket `[score_min, score_max]` is data-driven, so
+the gate transfers across assets without retuning absolute
+`regime_prob` values.
 
 ### Two-phase backtest (fit once, backtest many times)
 
@@ -148,6 +178,78 @@ qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv \
   --subperiod "Bull 2024,2024-01-01,2024-12-31"
 ```
+
+### Frozen-parameter robustness evaluation
+
+`qr-frozen-eval` trains the MCMC regime detector on a single fixed
+training block, freezes all estimated parameters, then evaluates the
+system on the subsequent test period without any re-estimation. The
+performance gap to the rolling walk-forward baseline empirically
+quantifies the value of periodic Bayesian recalibration.
+
+```bash
+qr-frozen-eval \
+    --model       mdrs_sde_btc \
+    --symbol      BTCUSDT \
+    --train-start 2020-01-01 \
+    --train-end   2020-12-31 \
+    --test-start  2021-01-01 \
+    --test-end    2025-12-31 \
+    --config-dir  src/configs \
+    --out         results/frozen_eval.csv
+```
+
+Pipeline: load full OHLCV → slice training block, apply event
+tagging and fit MCMC into a frozen params dict → roll the test block
+month by month, predicting with the frozen params and running the
+standard backtest engine → emit per-month trade CSVs plus a combined
+summary for direct comparison against rolling WFA.
+
+### Figure 1 — Sticky filter threshold sweep
+
+`qr-plot-sticky-sweep` produces the paper's Figure 1, which
+characterises the decision-latency vs. noise-suppression trade-off
+of the Persistence-Aware Stabilization Module.
+
+* Panel A: `d_min` vs Sharpe ratio + total return (%)
+* Panel B: `d_min` vs median entry delay (minutes) + false flip rate
+
+It consumes a directory of trades CSVs produced by running
+`qr-backtest` at different sticky `d_min` values, together with a
+signals pickle from `qr-backtest --fit-only`.
+
+```bash
+qr-plot-sticky-sweep \
+    --trades-dir results/sticky_sweep/ \
+    --signals    results/mdrs_sde_btc_btcusdt_<ts>_signals.pkl \
+    --baseline   5 \
+    --out        results/figure1_sticky_sweep.png
+
+# trades-dir should contain files matching: *duration={N}*.csv
+```
+
+### Figure 2 — Reliability diagram for w(Z_t)
+
+`qr-plot-reliability` produces the paper's Figure 2, the
+reliability diagram for the Bayesian regime weight `w(Z_t)`. It
+checks whether the posterior probability is *calibrated* — i.e.,
+whether predicted probabilities match empirical frequencies of
+direction-aligned breakout continuation under a profitability
+hurdle.
+
+```bash
+qr-plot-reliability \
+    --signals results/mdrs_sde_btc_btcusdt_<ts>_signals.pkl \
+    --price   data/crypto/binance/futures/btcusdt_5m.csv \
+    --horizon 280 \
+    --cost    0.003 \
+    --out     results/figure2_reliability.png
+```
+
+* `--horizon` — forward horizon `H` in bars (default 280 ≈ 23h at 5min)
+* `--cost`    — round-trip cost hurdle `c` (default 0.003 = 0.30%)
+* `--n-bins`  — number of probability bins (default 10)
+* `--subperiod` — optional start date filter (e.g. `2024-01-01`)
 
 ---
 

@@ -25,6 +25,15 @@ aggregated trades are passed through :class:`WalkForwardQpbGate` as a
 final post-processing step. This dynamically re-estimates the three
 QPB thresholds from recent trade history rather than using the fixed
 values from ``[filters.qpb]``. See ``_wf_qpb.py`` for details.
+
+PAITS-Event post-processing
+------------------------------------
+When ``[filters.qpb].mode = "event_rate"`` is set, the aggregated
+trades are filtered by :class:`WalkForwardEventRateGate` instead. This
+applies a bar-level threshold on the rolling-max of OOS regime
+probability, with the threshold recomputed each month by bisection so
+that the cooldown-adjusted event rate matches
+``target_events_per_month``. See ``_event_rate.py`` for details.
 """
 from __future__ import annotations
 
@@ -40,6 +49,10 @@ from joblib import Parallel, delayed
 
 from backtesting.core.base_model import BaseModel
 from backtesting.engines.engine import GenericBacktestEngine
+from backtesting.models.adapters._event_rate import (
+    WalkForwardEventRateConfig,
+    WalkForwardEventRateGate,
+)
 from backtesting.models.adapters._wf_qpb import (
     WalkForwardQpbConfig,
     WalkForwardQpbGate,
@@ -277,10 +290,19 @@ class WalkForwardRunner:
         ) -> pd.DataFrame:
         """Optionally apply walk-forward QPB filtering to aggregated trades.
 
-        Only active when the config sets ``[filters.qpb].mode = "walkforward"``.
-        In ``"static"`` mode (default, v1.17 behaviour), returns ``trades``
-        unchanged because the static QPB gate has already been applied
-        inside the adapter's ``predict()``.
+        Dispatches on ``[filters.qpb].mode``:
+
+        * ``"static"`` (v1.17 default): no-op. The static QPB gate has
+          already been applied at signal-level inside the adapter's
+          ``predict()``; returns ``trades`` unchanged.
+        * ``"walkforward"`` (v1.18+): re-estimates the QPB threshold
+          triple from recent trade history on a grid, then filters
+          completed trades by the per-trade threshold lookup.
+        * ``"event_rate"`` (v1.20+): replaces the QPB envelope with a
+          bar-level threshold on rolling-max regime probability whose
+          value is determined by bisection to match the configured
+          ``target_events_per_month`` under cooldown. Implemented in
+          :meth:`_apply_event_rate`.
 
         Args:
             trades: Aggregated completed-trades DataFrame.
@@ -293,6 +315,8 @@ class WalkForwardRunner:
         qpb_cfg = self._filter_config.get("qpb", {}) or {}
         mode = qpb_cfg.get("mode", "static")
 
+        if mode == "event_rate":
+            return self._apply_event_rate(trades, window_results)
         if mode != "walkforward":
             return trades
         if trades.empty:
@@ -337,6 +361,105 @@ class WalkForwardRunner:
         gate = WalkForwardQpbGate(cfg)
         filtered = gate.apply(trades, lookup)
 
+        return filtered
+
+    def _apply_event_rate(
+        self,
+        trades: pd.DataFrame,
+        window_results: list[WindowResult | None],
+        ) -> pd.DataFrame:
+        """Apply PAITS-Event walk-forward event-rate gating (v1.20.0).
+
+        Active when ``[filters.qpb].mode = "event_rate"`` is set in the
+        config. Replaces the QPB envelope chain with a bar-level
+        rolling-max regime probability threshold whose value is set by
+        bisection over the previous lookback window so that the
+        cooldown-adjusted event rate matches
+        ``target_events_per_month``.
+
+        The event-rate gate is applied at the *bar* level (via
+        :meth:`WalkForwardEventRateGate.compute_mask`) and then
+        intersected with the existing aggregated trades by entry
+        timestamp. Because the bar-level mask already enforces cooldown
+        spacing, the downstream single-position engine sees a sparse
+        stream of admissible entries.
+
+        Args:
+            trades: Aggregated trades DataFrame from upstream windows.
+            window_results: Per-window results carrying ``signal_df``
+                with ``regime_prob`` and ``direction_indicator``.
+
+        Returns:
+            Filtered trades DataFrame containing only those whose entry
+            bars are admitted by the event-rate gate.
+        """
+        if trades.empty:
+            return trades
+
+        qpb_cfg = self._filter_config.get("qpb", {}) or {}
+        er_section = qpb_cfg.get("event_rate", {}) or {}
+        cfg = WalkForwardEventRateConfig(
+            target_events_per_month=float(
+                er_section.get("target_events_per_month", 5.0)
+            ),
+            cooldown_days=float(er_section.get("cooldown_days", 5.0)),
+            lookback_days=int(er_section.get("lookback_days", 90)),
+            score_window_bars=int(er_section.get("score_window_bars", 144)),
+            refit_freq=str(er_section.get("refit_freq", "ME")),
+            fallback_threshold=float(
+                er_section.get("fallback_threshold", 0.45)
+            ),
+            min_lookback_bars=int(er_section.get("min_lookback_bars", 100)),
+        )
+
+        logger.info(
+            "PAITS-Event gate ACTIVE: target=%.1f/mo cooldown=%.2fd lookback=%dd",
+            cfg.target_events_per_month,
+            cfg.cooldown_days,
+            cfg.lookback_days,
+        )
+
+        # Reconstruct full signal frame from window results
+        signal_dfs = [
+            r.signal_df for r in window_results
+            if r is not None and not r.signal_df.empty
+        ]
+        if not signal_dfs:
+            logger.warning("PAITS-Event disabled — no signal DataFrames available")
+            return trades
+
+        full_signal = pd.concat(signal_dfs).sort_index()
+        full_signal = full_signal[~full_signal.index.duplicated(keep="first")]
+
+        required_cols = {"regime_prob", "direction_indicator"}
+        missing = required_cols - set(full_signal.columns)
+        if missing:
+            logger.error(
+                "PAITS-Event disabled — signal frame missing columns: %s",
+                missing,
+            )
+            return trades
+
+        gate = WalkForwardEventRateGate(cfg)
+        mask = gate.compute_mask(full_signal)
+        admitted_timestamps = full_signal.index[mask]
+
+        if "entry_time" not in trades.columns:
+            logger.error(
+                "PAITS-Event disabled — trades frame lacks 'entry_time' column"
+            )
+            return trades
+
+        admitted_set = set(admitted_timestamps)
+        kept_mask = trades["entry_time"].isin(admitted_set)
+        filtered = trades[kept_mask].reset_index(drop=True)
+
+        logger.info(
+            "PAITS-Event: %d / %d trades admitted (%.1f%%)",
+            len(filtered),
+            len(trades),
+            100.0 * len(filtered) / max(len(trades), 1),
+        )
         return filtered
 
     def _fit_window(

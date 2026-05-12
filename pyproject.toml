@@ -32,7 +32,6 @@ qr-mdrs-event-detect    = "strategies.mdrs_sde.cli.event_detect:main"
 qr-dl-train             = "strategies.dl_regime.cli.train:main"
 qr-validate             = "backtesting.cli.validate:main"
 qr-frozen-eval          = "backtesting.cli.frozen_eval:main"
-qr-plot-sticky-sweep    = "backtesting.cli.plot_sticky_sweep:main"
 qr-plot-reliability     = "backtesting.cli.plot_reliability:main"
 
 [build-system]

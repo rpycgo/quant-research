@@ -13,10 +13,10 @@ hidden states while MDRS-SDE uses a continuous sigmoid-weighted blend
 of mean-reversion and trend-following dynamics.
 
 HMM generates a continuous regime probability (the posterior
-probability of the bullish state) and is filtered by the
-same sticky / ADX / QPB pipeline as MDRS-SDE and DL-regime. This
-ensures a fair comparison of regime-signal quality across all three
-regime-probability based models.
+probability of the bullish state) and uses the same breakout signal
+assembly as MDRS-SDE, DL-regime, and LGBM. This ensures a fair
+comparison of regime-signal quality across all four regime-probability
+based models.
 
 Requires: hmmlearn (uv add hmmlearn)
 """
@@ -47,8 +47,7 @@ class HMMRegimeAdapter(BaseModel):
                          ``n_states`` (default 2), ``n_iter`` (default 100),
                          ``covariance_type`` (default "full").
         backtest_config: Parsed backtest settings dict (consumed sections:
-                         ``[risk_management]``, ``[filters]`` including
-                         ``[filters.qpb]``, and ``[trading_parameters]``).
+                         ``[risk_management]`` and ``[trading_parameters]``).
 
     Raises:
         ImportError: If ``hmmlearn`` is not installed.
@@ -130,15 +129,14 @@ class HMMRegimeAdapter(BaseModel):
         """Generate regime signals from HMM state predictions.
 
         Computes the posterior probability of the bullish state and
-        delegates the downstream filtering pipeline (sticky / ADX / QPB)
-        to :func:`_regime_gates.assemble_signal` for parity with
-        MDRS-SDE and DL-regime.
+        delegates breakout signal assembly to
+        :func:`_regime_gates.assemble_signal` for parity with
+        MDRS-SDE, DL-regime, and LGBM.
 
         Args:
-            test_data: Out-of-sample ``DataFrame`` with ``log_return``
-                       column and, when QPB is enabled, the QPB feature
-                       columns (``past_vol_48b``, ``past_ret_48b``,
-                       ``d_rv_90d_proxy``).
+            test_data: Out-of-sample ``DataFrame`` with ``log_return``,
+                       ``Close``, ``dynamic_resistance``, and
+                       ``dynamic_support`` columns.
             params:    Dict from :meth:`fit` containing ``model`` and
                        ``bullish_state``.
 

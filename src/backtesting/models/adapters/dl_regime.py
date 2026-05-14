@@ -11,8 +11,10 @@ Responsibilities
   No actual training happens here; training is performed offline by
   ``dl-regime/run_train.py``.
 * **predict()** — runs inference to produce ``regime_prob`` and delegates
-  the downstream filtering pipeline (sticky / ADX / QPB) to
-  :func:`_regime_gates.assemble_signal` for parity with MDRS-SDE and HMM.
+  breakout signal assembly to :func:`_regime_gates.assemble_signal`
+  for parity with MDRS-SDE, HMM, and LGBM. Entry-rate control is
+  performed downstream by the PAITS-Event gate in
+  ``WalkForwardRunner``.
 
 This adapter enables direct comparison of DL baselines against MDRS-SDE
 within the same WalkForwardRunner and GenericBacktestEngine, ensuring
@@ -45,8 +47,8 @@ class DlRegimeCryptoAdapter(BaseModel):
     """Adapter for pre-trained DL regime detection models.
 
     Loads per-window checkpoints produced by ``dl-regime`` WFA training
-    and generates trading signals using the shared sticky / ADX / QPB
-    pipeline (identical to MDRS-SDE and HMM).
+    and generates trading signals using the shared breakout signal
+    assembly (identical to MDRS-SDE, HMM, and LGBM).
 
     DL models use fixed execution parameters from config (no SNR or
     vol_quality scaling) since they lack MCMC posterior estimates.
@@ -139,10 +141,9 @@ class DlRegimeCryptoAdapter(BaseModel):
         ) -> pd.DataFrame:
         """Generate trading signals from the DL model's regime probability.
 
-        Runs DL inference to obtain ``regime_prob`` and delegates the
-        downstream filtering pipeline (sticky / ADX / QPB) to
-        :func:`_regime_gates.assemble_signal` for parity with MDRS-SDE
-        and HMM.
+        Runs DL inference to obtain ``regime_prob`` and delegates
+        breakout signal assembly to :func:`_regime_gates.assemble_signal`
+        for parity with MDRS-SDE, HMM, and LGBM.
 
         Args:
             test_data: Out-of-sample ``DataFrame``.

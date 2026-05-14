@@ -27,8 +27,10 @@ corpus to detected breakout event windows.
   via a hard threshold.
 
 * **Inference**: Applied to the full out-of-sample test window to produce
-  ``regime_prob``. The downstream sticky / ADX / QPB pipeline (shared
-  with MDRS-SDE, DL, and HMM) then filters entry signals.
+  ``regime_prob``. Breakout direction assembly is performed by the
+  shared :func:`_regime_gates.assemble_signal` (parity with MDRS-SDE,
+  DL-regime, and HMM); entry-rate control is performed downstream by
+  the PAITS-Event gate in ``WalkForwardRunner``.
 
 Look-ahead bias audit
 ---------------------
@@ -56,7 +58,6 @@ _DEFAULT_FEATURES: list[str] = [
     "absolute_return_z_score",
     "log_return",
     "direction_indicator",
-    "ADX",
 ]
 
 _MIN_TRAINING_ROWS = 100
@@ -69,8 +70,9 @@ class LGBMRegimeAdapter(BaseModel):
     in-sample train_slice and produces ``regime_prob`` for the
     out-of-sample test window.
 
-    The downstream signal pipeline (sticky / ADX / QPB) is identical to
-    MDRS-SDE, DL, and HMM adapters via :func:`assemble_signal`.
+    The downstream signal pipeline (shared breakout-direction assembly)
+    is identical to MDRS-SDE, DL, and HMM adapters via
+    :func:`assemble_signal`.
 
     Args:
         model_config:    Merged config from ``BacktestConfigLoader``.
@@ -205,7 +207,7 @@ class LGBMRegimeAdapter(BaseModel):
         """Generate signals from LightGBM regime probability.
 
         Runs inference on the full test window and delegates to
-        assemble_signal for sticky / ADX / QPB filtering.
+        assemble_signal for breakout direction assembly.
 
         Args:
             test_data: Out-of-sample DataFrame.

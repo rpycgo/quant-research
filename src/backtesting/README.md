@@ -12,17 +12,16 @@ Supports multiple asset classes and pluggable model architectures through a clea
 backtesting/
 ├── benchmarks/         BuyAndHoldBenchmark, StatisticalValidator
 ├── cli/                qr-backtest, qr-buy-and-hold, qr-validate,
-│                       qr-frozen-eval, qr-plot-sticky-sweep,
-│                       qr-plot-reliability
+│                       qr-frozen-eval, qr-plot-reliability
 ├── core/               Abstract interfaces (BaseModel, BaseLoader, BaseEngine)
 │                       + 3-layer hierarchical config loader
 ├── assets/
 │   └── crypto/         CryptoLoader (Binance / local CSV) + CryptoPreprocessor
 ├── engines/            GenericBacktestEngine · WalkForwardRunner · PerformanceAnalyzer
 ├── models/
-│   ├── adapters/       mdrs_sde, dl_regime, hmm_regime (share _regime_gates);
-│   │                   _wf_qpb (walk-forward QPB estimator);
-│   │                   _event_rate (PAITS-Event gate, v1.20+);
+│   ├── adapters/       mdrs_sde, dl_regime, hmm_regime, lgbm_regime
+│   │                   (share _regime_gates for breakout signal assembly);
+│   │                   _event_rate (PAITS-Event gate);
 │   │                   garch, simple_breakout, ma_crossover, rsi (pure rules)
 │   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
@@ -33,9 +32,8 @@ backtesting/
 - **Model layer** owns all model-specific logic: signal generation, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
 - **Engine layer** owns execution: TP / SL / trailing stop / time-out. It knows nothing about the model that generated the signals.
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
-- **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`) share a common downstream signal-level pipeline (sticky filter → ADX gate → static QPB gate) via `_regime_gates.assemble_signal`, ensuring fair comparison under identical execution conditions.
-- **Trade-level WF-QPB post-processing** (optional) is applied by `WalkForwardRunner` after aggregating per-window trades. It re-estimates the three QPB thresholds from recent completed-trade history rather than using fixed values. See the *QPB modes* section below.
-- **PAITS-Event gate** is an alternative post-processing mode that replaces the QPB envelope with a bar-level threshold on `rolling_max(regime_prob, 12h)`, recomputed each month by bisection so that the cooldown-adjusted event rate matches a target rate. See the *QPB modes* section below.
+- **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`, `lgbm_regime`) share a common breakout signal assembly via `_regime_gates.assemble_signal`: `signal = +1` when `regime_prob > entry_threshold` and `Close > dynamic_resistance`, `-1` for the short-symmetric case, else `0`. This guarantees fair comparison under identical execution conditions.
+- **Trade-level PAITS-Event post-processing** is applied by `WalkForwardRunner` after aggregating per-window trades. It thresholds `rolling_max(regime_prob, 12h)` with a threshold recomputed each month by bisection so that the cooldown-adjusted event rate matches a target rate. See the *PAITS-Event gate* section below.
 - **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
@@ -48,7 +46,7 @@ backtesting/
 
 | Model key | Asset | Adapter | Notes |
 |---|---|---|---|
-| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, event-zone training, sticky/ADX/QPB |
+| `mdrs_sde_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MdrsSdeCryptoAdapter` | MCMC, event-zone training, breakout + PAITS-Event |
 
 ### Benchmark models
 
@@ -58,11 +56,11 @@ backtesting/
 | `simple_breakout_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `SimpleBreakoutAdapter` | pure rule | 288-period rolling high/low |
 | `ma_crossover_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MACrossoverAdapter` | pure rule | EMA(12)/EMA(26) |
 | `rsi_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `RSIAdapter` | pure rule | RSI(14), 30/70 thresholds |
-| `hmm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `HMMRegimeAdapter` | sticky/ADX/QPB | 2-state Gaussian HMM |
-| `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | LSTM |
-| `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | TCN |
-| `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | sticky/ADX/QPB | Transformer |
-| `lgbm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `LGBMRegimeAdapter` | sticky/ADX/QPB | LightGBM binary classifier, full train_slice |
+| `hmm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `HMMRegimeAdapter` | breakout + PAITS-Event | 2-state Gaussian HMM |
+| `dl_regime_lstm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | breakout + PAITS-Event | LSTM |
+| `dl_regime_tcn_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | breakout + PAITS-Event | TCN |
+| `dl_regime_transformer_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `DlRegimeCryptoAdapter` | breakout + PAITS-Event | Transformer |
+| `lgbm_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `LGBMRegimeAdapter` | breakout + PAITS-Event | LightGBM binary classifier, full train_slice |
 
 ---
 
@@ -85,29 +83,20 @@ qr-backtest --model lgbm_btc --symbol BTCUSDT
 qr-backtest --list-models
 ```
 
-### QPB modes
+### PAITS-Event gate
 
-Three QPB modes are supported:
+PAITS-Event is the trade-level post-processing gate that controls
+entry density. It computes
+`score_t = rolling_max(regime_prob, score_window_bars)`, then at each
+`refit_freq` boundary bisects over the previous `lookback_days` of
+scores to find the threshold giving exactly `target_events_per_month`
+cooldown-respecting events. No threshold grid is hardcoded; the
+bracket `[score_min, score_max]` is data-driven, so the gate
+transfers across assets without retuning absolute `regime_prob`
+values.
 
-| Mode | Description | When to use |
-|---|---|---|
-| `static` | Fixed thresholds from `[filters.qpb]` | Reproducing v1.17 results, sensitivity analysis, single-asset calibrated runs |
-| `walkforward` | Thresholds re-estimated from trade history (grid search) | OOS-valid evaluation, default for v1.18–v1.19 |
-| `event_rate` | PAITS-Event gate (v1.20+); bisection threshold on rolling-max regime_prob, target events/month | Cross-asset robust evaluation, paper-consistent walk-forward (lookback = Bayesian train window) |
-
-```bash
-# Explicit mode selection via CLI
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode event_rate
-
-# Disable QPB entirely (v1.16 equivalent)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
-```
-
-#### PAITS-Event mode (v1.20+)
-
-Set `[filters.qpb].mode = "event_rate"` and configure
+Enable by setting `[filters.qpb].mode = "event_rate"` (this is the
+default in `configs/backtest_settings.toml`) and configuring
 `[filters.qpb.event_rate]`:
 
 ```toml
@@ -121,19 +110,14 @@ fallback_threshold      = 0.45      # warm-up fallback
 min_lookback_bars       = 100
 ```
 
-The gate computes `score_t = rolling_max(regime_prob, score_window_bars)`,
-then at each `refit_freq` boundary bisects over the previous
-`lookback_days` of scores to find the threshold giving exactly
-`target_events_per_month` cooldown-respecting events. No threshold grid
-is hardcoded; the bracket `[score_min, score_max]` is data-driven, so
-the gate transfers across assets without retuning absolute
-`regime_prob` values.
+To disable post-processing entirely, omit `[filters.qpb]` from the
+config file (the dispatcher returns trades unchanged when no mode is
+set).
 
 ### Two-phase backtest (fit once, backtest many times)
 
 MCMC sampling is the bottleneck. Use the two-phase API to run fitting
-once and replay the backtest instantly whenever config changes. Both
-QPB modes are compatible with `--from-signals`.
+once and replay the backtest instantly whenever config changes.
 
 ```bash
 # Phase 1 — fit + signal generation (MCMC, runs once, takes time)
@@ -141,33 +125,26 @@ qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --fit-only
 # → results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl
 
 # Phase 2 — backtest only (seconds, repeat freely)
-# Same signals pickle works for any QPB mode
 qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \
-    --from-signals results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl \
-    --qpb-mode walkforward
+    --from-signals results/mdrs_sde_btc_btcusdt_<timestamp>_signals.pkl
 ```
 
-### Ablation study
+### Sensitivity studies
 
-```bash
-# Full model (sticky + ADX + static QPB, v1.17 reference)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
+To explore PAITS-Event behaviour, edit
+`configs/backtest_settings.toml::[filters.qpb.event_rate]` and re-run.
+Recommended sweeps:
 
-# Walk-forward QPB
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
-
-# w/o QPB gate
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
-
-# w/o sticky filter
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
-
-# w/o ADX gate
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
-
-# All filters off (pure baseline)
-qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky --no-adx --no-qpb
+```toml
+target_events_per_month   # 3, 4, 5, 6, 7      (entry density)
+cooldown_days             # 3.0, 5.0, 7.0      (re-entry spacing)
+lookback_days             # 60, 90, 120, 180   (threshold-fitting window)
 ```
+
+The legacy ablation flags (`--no-sticky`, `--no-adx`, `--no-qpb`,
+`--qpb-mode`) were removed in v2.0 together with the sticky / ADX /
+static QPB filter chain. To reproduce v1.x baselines, check out the
+`v1.20.0` tag.
 
 ### Statistical validation
 
@@ -204,29 +181,6 @@ tagging and fit MCMC into a frozen params dict → roll the test block
 month by month, predicting with the frozen params and running the
 standard backtest engine → emit per-month trade CSVs plus a combined
 summary for direct comparison against rolling WFA.
-
-### Figure 1 — Sticky filter threshold sweep
-
-`qr-plot-sticky-sweep` produces the paper's Figure 1, which
-characterises the decision-latency vs. noise-suppression trade-off
-of the Persistence-Aware Stabilization Module.
-
-* Panel A: `d_min` vs Sharpe ratio + total return (%)
-* Panel B: `d_min` vs median entry delay (minutes) + false flip rate
-
-It consumes a directory of trades CSVs produced by running
-`qr-backtest` at different sticky `d_min` values, together with a
-signals pickle from `qr-backtest --fit-only`.
-
-```bash
-qr-plot-sticky-sweep \
-    --trades-dir results/sticky_sweep/ \
-    --signals    results/mdrs_sde_btc_btcusdt_<ts>_signals.pkl \
-    --baseline   5 \
-    --out        results/figure1_sticky_sweep.png
-
-# trades-dir should contain files matching: *duration={N}*.csv
-```
 
 ### Figure 2 — Reliability diagram for w(Z_t)
 
@@ -277,53 +231,48 @@ configs/
 # backtest_settings.toml
 
 [filters]
-use_sticky         = true
-use_adx            = true
 only_selected_zone = false
 
 [filters.qpb]
-mode                 = "walkforward"  # "static" | "walkforward"
-enabled              = true           # gate on/off (static mode)
-past_vol_48b_max     = 0.003          # static thresholds / WF fallback
-aligned_pret_48b_max = 0.02
-d_rv_90d_max         = 0.55
+mode = "event_rate"   # only "event_rate" is supported in v2.0+
 
-[filters.qpb.walkforward]
-lookback_months           = 9
-refit_freq_months         = 3
-min_lookback_trades       = 20
-min_filter_trades         = 5
-criterion                 = "sharpe_stable"  # sharpe | mean | sortino | sharpe_stable
-trades_per_year_estimate  = 10.0
-vol_grid  = [0.002, 0.0025, 0.003, 0.0035, 0.004, 0.005]
-pret_grid = [0.015, 0.020, 0.025, 0.030, 0.040, 0.050]
-rv_grid   = [0.45, 0.50, 0.55, 0.60, 0.70, 0.85]
+[filters.qpb.event_rate]
+target_events_per_month = 5.0
+cooldown_days           = 5.0
+lookback_days           = 90
+score_window_bars       = 144
+refit_freq              = "ME"
+fallback_threshold      = 0.45
+min_lookback_bars       = 100
 ```
 
-The `[filters.*]` settings apply only to **regime-probability based
-adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`). Rule-based adapters
-(`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as
-self-contained technical rules and ignore these settings.
+The `[filters.qpb.event_rate]` settings apply only to
+**regime-probability based adapters** (`mdrs_sde`, `dl_regime`,
+`hmm_regime`, `lgbm_regime`). Rule-based adapters (`simple_breakout`,
+`ma_crossover`, `rsi`) are evaluated as self-contained technical rules
+and ignore these settings.
 
 ---
 
 ## Cross-asset generalization
 
-The QPB gate thresholds in the default configuration are calibrated on
-BTC/USDT 2020-2025. Applying identical absolute thresholds to ETH, SOL,
-or XRP does not reproduce BTC-level risk-adjusted performance, because
-each asset has a distinct volatility distribution (e.g. ETH median 90d
-realised vol ≈ 0.77 versus BTC ≈ 0.52), so a BTC-fit threshold occupies
-a different informational quantile on a more volatile asset.
+Unlike the legacy static QPB thresholds (BTC-calibrated absolute
+values for `past_vol_48b_max`, `aligned_pret_48b_max`, and
+`d_rv_90d_max`), the PAITS-Event gate is *self-calibrating* per
+asset:
 
-For non-BTC assets, users should either:
+- The threshold bracket is `[min, max]` of the asset's own
+  `rolling_max(regime_prob, 12h)` over the previous 3 months.
+- Bisection finds the value giving exactly
+  `target_events_per_month` cooldown-respecting events for *that
+  asset's* probability distribution.
 
-- disable the gate (`filters.qpb.enabled = false`) and run baseline PAITS, or
-- recalibrate `past_vol_48b_max`, `aligned_pret_48b_max`, and
-  `d_rv_90d_max` on the target asset via in-sample grid search.
-
-Cross-asset results under BTC-calibrated thresholds are reported in the
-companion paper's appendix.
+Therefore the *same* `[filters.qpb.event_rate]` block can be applied
+to ETH, SOL, or XRP without rescaling. The cross-asset comparison
+becomes meaningful: differences in performance reflect detector
+quality on each asset's regime structure, not gate-calibration
+mismatch. Cross-asset results are reported in the companion paper's
+appendix.
 
 ---
 
@@ -351,9 +300,10 @@ class MyModelAdapter(BaseModel):
         ...
 ```
 
-For regime-probability models, delegate the downstream filtering to
+For regime-probability models, delegate breakout signal assembly to
 `backtesting.models.adapters._regime_gates.assemble_signal` to share
-the canonical sticky / ADX / QPB pipeline.
+the canonical breakout-direction logic with `mdrs_sde`, `dl_regime`,
+`hmm_regime`, and `lgbm_regime`.
 
 **Step 3** — Register in `src/backtesting/models/registry.py`.
 

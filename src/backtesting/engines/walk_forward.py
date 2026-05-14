@@ -18,22 +18,18 @@ Given a ``start_date``, an ``end_date``, ``training_months``, and
 * Testing window  : ``[test_start, test_start + testing_months)``
 * Windows advance by one calendar month (``freq="MS"``).
 
-WF-QPB post-processing
-----------------------
-When ``[filters.qpb].mode = "walkforward"`` is set in the config, the
-aggregated trades are passed through :class:`WalkForwardQpbGate` as a
-final post-processing step. This dynamically re-estimates the three
-QPB thresholds from recent trade history rather than using the fixed
-values from ``[filters.qpb]``. See ``_wf_qpb.py`` for details.
-
 PAITS-Event post-processing
-------------------------------------
+---------------------------
 When ``[filters.qpb].mode = "event_rate"`` is set, the aggregated
-trades are filtered by :class:`WalkForwardEventRateGate` instead. This
-applies a bar-level threshold on the rolling-max of OOS regime
-probability, with the threshold recomputed each month by bisection so
-that the cooldown-adjusted event rate matches
-``target_events_per_month``. See ``_event_rate.py`` for details.
+trades are filtered by :class:`WalkForwardEventRateGate`. This applies
+a bar-level threshold on the rolling-max of OOS regime probability,
+with the threshold recomputed each month by bisection so that the
+cooldown-adjusted event rate matches ``target_events_per_month``. See
+``_event_rate.py`` for details.
+
+As of v2.0, ``"event_rate"`` is the only supported post-processing
+mode. The legacy ``"static"`` and ``"walkforward"`` modes were removed
+together with the underlying sticky / ADX / QPB filter chain.
 """
 from __future__ import annotations
 
@@ -52,11 +48,6 @@ from backtesting.engines.engine import GenericBacktestEngine
 from backtesting.models.adapters._event_rate import (
     WalkForwardEventRateConfig,
     WalkForwardEventRateGate,
-)
-from backtesting.models.adapters._wf_qpb import (
-    WalkForwardQpbConfig,
-    WalkForwardQpbGate,
-    build_feature_lookup,
 )
 
 logger = logging.getLogger(__name__)
@@ -274,8 +265,8 @@ class WalkForwardRunner:
 
         all_trades, param_summary = self._aggregate(updated)
 
-        # Optional WF-QPB post-processing
-        all_trades = self._apply_wf_qpb(all_trades, updated)
+        # Trade-level filter post-processing (PAITS-Event in v2.0+)
+        all_trades = self._apply_filter_postprocessing(all_trades, updated)
 
         return all_trades, param_summary
 
@@ -283,99 +274,52 @@ class WalkForwardRunner:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _apply_wf_qpb(
+    def _apply_filter_postprocessing(
         self,
         trades: pd.DataFrame,
         window_results: list[WindowResult | None],
         ) -> pd.DataFrame:
-        """Optionally apply walk-forward QPB filtering to aggregated trades.
+        """Apply trade-level post-processing based on ``[filters.qpb].mode``.
 
-        Dispatches on ``[filters.qpb].mode``:
-
-        * ``"static"`` (v1.17 default): no-op. The static QPB gate has
-          already been applied at signal-level inside the adapter's
-          ``predict()``; returns ``trades`` unchanged.
-        * ``"walkforward"`` (v1.18+): re-estimates the QPB threshold
-          triple from recent trade history on a grid, then filters
-          completed trades by the per-trade threshold lookup.
-        * ``"event_rate"`` (v1.20+): replaces the QPB envelope with a
-          bar-level threshold on rolling-max regime probability whose
-          value is determined by bisection to match the configured
-          ``target_events_per_month`` under cooldown. Implemented in
-          :meth:`_apply_event_rate`.
+        As of v2.0, the only supported mode is ``"event_rate"``
+        (PAITS-Event); the legacy ``"static"`` and ``"walkforward"``
+        modes were removed together with the sticky / ADX / QPB
+        filter chain. Any other mode value (including the absence of
+        the config section) results in a no-op pass-through.
 
         Args:
             trades: Aggregated completed-trades DataFrame.
-            window_results: Per-window results (used to build the
-                per-bar feature-lookup function needed by WF-QPB).
+            window_results: Per-window results carrying ``signal_df``.
 
         Returns:
             Filtered (or unchanged) trades DataFrame.
         """
         qpb_cfg = self._filter_config.get("qpb", {}) or {}
-        mode = qpb_cfg.get("mode", "static")
+        mode = qpb_cfg.get("mode")
 
         if mode == "event_rate":
             return self._apply_event_rate(trades, window_results)
-        if mode != "walkforward":
-            return trades
-        if trades.empty:
-            return trades
-
-        wf_section = qpb_cfg.get("walkforward", {}) or {}
-        cfg = WalkForwardQpbConfig(
-            lookback_months=int(wf_section.get("lookback_months", 9)),
-            refit_freq_months=int(wf_section.get("refit_freq_months", 3)),
-            min_lookback_trades=int(wf_section.get("min_lookback_trades", 20)),
-            min_filter_trades=int(wf_section.get("min_filter_trades", 5)),
-            criterion=wf_section.get("criterion", "sharpe_stable"),
-            trades_per_year_estimate=float(
-                wf_section.get("trades_per_year_estimate", 10.0)
-            ),
-            vol_grid=wf_section.get("vol_grid", None) or WalkForwardQpbConfig().vol_grid,
-            pret_grid=wf_section.get("pret_grid", None) or WalkForwardQpbConfig().pret_grid,
-            rv_grid=wf_section.get("rv_grid", None) or WalkForwardQpbConfig().rv_grid,
-            fallback_vol_max=float(qpb_cfg.get("past_vol_48b_max", 0.003)),
-            fallback_pret_max=float(qpb_cfg.get("aligned_pret_48b_max", 0.02)),
-            fallback_rv_max=float(qpb_cfg.get("d_rv_90d_max", 0.55)),
-        )
-
-        logger.info(
-            "WF-QPB post-processing ACTIVE: lookback=%dm refit=%dm criterion=%s",
-            cfg.lookback_months, cfg.refit_freq_months, cfg.criterion,
-        )
-
-        signal_dfs = [
-            r.signal_df for r in window_results
-            if r is not None and not r.signal_df.empty
-        ]
-        try:
-            lookup = build_feature_lookup(signal_dfs)
-        except KeyError as exc:
-            logger.error(
-                "WF-QPB disabled — signal DataFrames lack QPB feature columns: %s",
-                exc,
+        if mode is not None and mode != "event_rate":
+            logger.warning(
+                "Unsupported [filters.qpb].mode=%r in v2.0; "
+                "use \"event_rate\" or remove the section. Pass-through.",
+                mode,
             )
-            return trades
 
-        gate = WalkForwardQpbGate(cfg)
-        filtered = gate.apply(trades, lookup)
-
-        return filtered
+        return trades
 
     def _apply_event_rate(
         self,
         trades: pd.DataFrame,
         window_results: list[WindowResult | None],
         ) -> pd.DataFrame:
-        """Apply PAITS-Event walk-forward event-rate gating (v1.20.0).
+        """Apply PAITS-Event walk-forward event-rate gating.
 
         Active when ``[filters.qpb].mode = "event_rate"`` is set in the
-        config. Replaces the QPB envelope chain with a bar-level
-        rolling-max regime probability threshold whose value is set by
-        bisection over the previous lookback window so that the
-        cooldown-adjusted event rate matches
-        ``target_events_per_month``.
+        config. Applies a bar-level rolling-max regime probability
+        threshold whose value is set by bisection over the previous
+        lookback window so that the cooldown-adjusted event rate
+        matches ``target_events_per_month``.
 
         The event-rate gate is applied at the *bar* level (via
         :meth:`WalkForwardEventRateGate.compute_mask`) and then
@@ -460,6 +404,7 @@ class WalkForwardRunner:
             len(trades),
             100.0 * len(filtered) / max(len(trades), 1),
         )
+
         return filtered
 
     def _fit_window(

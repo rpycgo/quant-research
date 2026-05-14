@@ -20,12 +20,7 @@ Computed columns
 * ``manual_support``            — rolling-min low during quiet regimes
 * ``dynamic_resistance``        — Donchian-channel upper band (lag-1)
 * ``dynamic_support``           — Donchian-channel lower band (lag-1)
-* ``ADX``                       — Average Directional Index (14-period)
 * ``direction_indicator``       — 1 / -1 / 0 relative to quiet S/R levels
-* ``past_vol_48b``              — rolling 48-bar (4h) log-return std
-* ``past_ret_48b``              — 48-bar cumulative return (unsigned)
-* ``d_rv_90d_proxy``            — daily 90-day annualised realised vol,
-                                  lag-1, mapped to 5-minute bars
 """
 from __future__ import annotations
 
@@ -81,8 +76,7 @@ class CryptoPreprocessor:
         """
         df = self.calculate_base_features(df)
         df = self.identify_quiet_sr_levels(df)
-        df = self.calculate_strategy_indicators(df)
-        df = self.calculate_qpb_features(df)
+        df = self.calculate_donchian(df)
 
         return df
 
@@ -196,19 +190,27 @@ class CryptoPreprocessor:
 
         return df
 
-    def calculate_strategy_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute Donchian-channel S/R and ADX for entry filtering.
+    def calculate_donchian(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute Donchian-channel dynamic resistance and support levels.
 
-        Donchian channels (lag-1) define dynamic resistance and support used
-        by model adapters to determine Long / Short entry direction.  ADX
-        filters out low-trending environments.
+        Donchian channels (lag-1) define the dynamic resistance and
+        support used by model adapters to determine Long / Short entry
+        direction. Resistance is the rolling maximum of ``High`` and
+        support is the rolling minimum of ``Low``, both lagged by one
+        bar to prevent look-ahead.
 
         Args:
             df: OHLCV ``DataFrame``.
 
         Returns:
-            ``df`` with ``dynamic_resistance``, ``dynamic_support``, and
-            ``ADX`` added.
+            ``df`` with ``dynamic_resistance`` and ``dynamic_support``
+            columns added.
+
+        Notes:
+            Prior versions also computed an ``ADX`` column and three
+            QPB microstructure features (``past_vol_48b``,
+            ``past_ret_48b``, ``d_rv_90d_proxy``). These were removed
+            in v2.0 together with the sticky / ADX / QPB filter chain.
         """
         df["dynamic_resistance"] = (
             df["High"].rolling(self._window).max().shift(1)
@@ -216,89 +218,5 @@ class CryptoPreprocessor:
         df["dynamic_support"] = (
             df["Low"].rolling(self._window).min().shift(1)
         )
-        df["ADX"] = self._calculate_adx(df)
 
         return df
-
-    def calculate_qpb_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute Quiet Pre-Breakout (QPB) entry-gate inputs.
-
-        Produces three microstructure features used by the adapter-level
-        QPB gate to discriminate high-quality breakout entries from
-        cost-inefficient transitions:
-
-        * ``past_vol_48b``   — rolling 48-bar (4 h) std of ``log_return``
-        * ``past_ret_48b``   — 48-bar cumulative close-to-close return
-        * ``d_rv_90d_proxy`` — daily 90-day annualised realised volatility,
-                               lagged by one day and forward-filled onto
-                               5-minute bars to prevent look-ahead
-
-        Args:
-            df: ``DataFrame`` containing ``log_return`` and ``Close``.
-
-        Returns:
-            ``df`` with ``past_vol_48b``, ``past_ret_48b``, and
-            ``d_rv_90d_proxy`` added.
-        """
-        df["past_vol_48b"] = df["log_return"].rolling(48).std()
-        df["past_ret_48b"] = df["Close"].pct_change(48)
-
-        # Daily 90-day realised volatility, lagged 1 day before mapping
-        # back onto the 5-minute grid so today's signal cannot see
-        # today's end-of-day vol.
-        daily_close = df["Close"].resample("D").last()
-        daily_rv = (
-            daily_close.pct_change().rolling(90).std() * np.sqrt(365)
-        )
-        daily_rv_lag1 = daily_rv.shift(1)
-        daily_rv_lag1.index.name = "date"
-
-        date_key = df.index.normalize()
-        df["d_rv_90d_proxy"] = pd.Series(
-            date_key, index=df.index
-        ).map(daily_rv_lag1)
-
-        return df
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _calculate_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
-        """Compute the Average Directional Index (ADX).
-
-        Uses a vectorised approach with Wilder's exponential smoothing
-        (``ewm(alpha=1/period)``) for +DI and -DI, followed by a rolling
-        mean for ADX.  Index alignment is guaranteed by operating on the
-        full ``DataFrame`` series.
-
-        Args:
-            df:     OHLCV ``DataFrame`` containing ``High``, ``Low``,
-                    ``Close``.
-            period: Smoothing period (default: 14).
-
-        Returns:
-            ``Series`` of ADX values aligned to ``df``'s index.
-        """
-        plus_dm = df["High"].diff().clip(lower=0)
-        minus_dm = df["Low"].diff().clip(upper=0).abs()
-
-        true_range = pd.concat(
-            [
-                df["High"] - df["Low"],
-                (df["High"] - df["Close"].shift(1)).abs(),
-                (df["Low"] - df["Close"].shift(1)).abs(),
-            ],
-            axis=1,
-        ).max(axis=1)
-
-        atr = true_range.rolling(period).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1 / period).mean() / atr)
-        minus_di = 100 * (minus_dm.ewm(alpha=1 / period).mean() / atr)
-
-        dx = (
-            (plus_di - minus_di).abs() / (plus_di + minus_di).abs()
-        ) * 100
-
-        return dx.rolling(period).mean()

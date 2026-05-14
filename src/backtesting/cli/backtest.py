@@ -31,17 +31,6 @@ Usage
     qr-backtest --model rsi_btc --symbol BTCUSDT
     qr-backtest --model hmm_btc --symbol BTCUSDT
 
-    # QPB mode selection (static vs walk-forward)
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode static
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --qpb-mode walkforward
-
-    # Ablation flags (regime-probability adapters only)
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-sticky
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-adx
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT --no-qpb
-    qr-backtest --model mdrs_sde_btc --symbol BTCUSDT \\
-        --no-sticky --no-adx --no-qpb
-
     # List all registered models
     qr-backtest --list-models
 """
@@ -121,35 +110,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Python logging level.",
     )
     # ------------------------------------------------------------------
-    # Ablation / mode flags
+    # Execution flags
     # ------------------------------------------------------------------
-    parser.add_argument(
-        "--no-sticky",
-        action="store_true",
-        help="Disable sticky filter.",
-    )
-    parser.add_argument(
-        "--no-adx",
-        action="store_true",
-        help="Disable ADX gate.",
-    )
-    parser.add_argument(
-        "--no-qpb",
-        action="store_true",
-        help="Disable QPB (Quiet Pre-Breakout) gate entirely.",
-    )
-    parser.add_argument(
-        "--qpb-mode",
-        type=str,
-        default=None,
-        choices=["static", "walkforward"],
-        help=(
-            "QPB threshold mode override. 'static' uses the fixed "
-            "thresholds from [filters.qpb]. 'walkforward' re-estimates "
-            "thresholds dynamically from recent trade history per the "
-            "[filters.qpb.walkforward] section."
-        ),
-    )
     parser.add_argument(
         "--no-funding",
         action="store_true",
@@ -195,31 +157,7 @@ def _override_wfa_dates(
         cfg["start_date"] = start
     if end:
         cfg["end_date"] = end
-    return cfg
 
-
-def _apply_filter_overrides(
-    filter_cfg: dict[str, Any],
-    args: argparse.Namespace,
-    ) -> dict[str, Any]:
-    """Apply CLI ablation / mode flags on top of the config-loaded filter dict.
-
-    Returns a new dict; does not mutate the input. The ``[filters.qpb]``
-    sub-section is deep-copied before modification.
-    """
-    cfg = filter_cfg.copy()
-    if args.no_sticky:
-        cfg["use_sticky"] = False
-    if args.no_adx:
-        cfg["use_adx"] = False
-
-    qpb = (cfg.get("qpb") or {}).copy()
-    if args.no_qpb:
-        qpb["enabled"] = False
-        qpb["mode"] = "static"  # ensure WF layer is also off
-    if args.qpb_mode is not None:
-        qpb["mode"] = args.qpb_mode
-    cfg["qpb"] = qpb
     return cfg
 
 
@@ -277,13 +215,10 @@ def main() -> int:
         args.end,
     )
 
-    # Ablation: override filter_config from CLI flags
-    filter_cfg = _apply_filter_overrides(bt_cfg.get("filters", {}), args)
-
-    # Update bt_cfg in-place so downstream consumers (engine, runner) see the
-    # overridden QPB mode.
-    bt_cfg = bt_cfg.copy()
-    bt_cfg["filters"] = filter_cfg
+    # Filter config is consumed directly from the loaded TOML. As of v2.0
+    # the only supported mode is [filters.qpb].mode = "event_rate"; no
+    # CLI overrides are provided.
+    filter_cfg = bt_cfg.get("filters", {})
 
     log.info(
         "Run: model=%s | symbol=%s | %s → %s | filters=%s",

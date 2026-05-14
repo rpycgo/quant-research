@@ -13,9 +13,7 @@ input_features = [
     "volume_z_score",
     "absolute_return_z_score",
     "log_return",
-    "direction_indicator",
-    "ADX",
-]
+    "direction_indicator",]
 
 # Label horizon: N bars forward for direction-aligned return label
 # 12 bars = 1 hour at 5-minute resolution

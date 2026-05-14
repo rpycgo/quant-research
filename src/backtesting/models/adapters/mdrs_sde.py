@@ -10,9 +10,10 @@ Responsibilities
   ``mdrs_sde.SdeModeler`` and returns the posterior means as a plain
   ``dict``.
 * **predict()** — runs the sigmoid regime-probability calculation and
-  applies the shared sticky / ADX / QPB pipeline from
+  delegates breakout signal assembly to
   ``_regime_gates.assemble_signal`` before emitting ``signal`` and
-  ``confidence`` columns.
+  ``confidence`` columns. Entry-rate control is performed downstream
+  by the PAITS-Event gate in ``WalkForwardRunner``.
 
 External dependency
 -------------------
@@ -44,16 +45,14 @@ class MdrsSdeCryptoAdapter(BaseModel):
     package.  The adapter is asset-agnostic: the same class handles BTC,
     ETH, or any other crypto pair whose preprocessed ``DataFrame`` contains
     the required feature columns (``hybrid_z_score``, ``log_return``,
-    ``direction_indicator``, and — when QPB is enabled — ``past_vol_48b``,
-    ``past_ret_48b``, ``d_rv_90d_proxy``).
+    ``direction_indicator``).
 
     Args:
         model_config: Merged config dict from
             ``BacktestConfigLoader.get_model_config("mdrs_sde_*")``.
             Must contain ``[sde_priors]`` and ``[mcmc_settings]`` sections.
         backtest_config: Parsed backtest settings dict (consumed sections:
-            ``[risk_management]``, ``[filters]`` including
-            ``[filters.qpb]``, and ``[trading_parameters]``).
+            ``[risk_management]``, ``[trading_parameters]``).
 
     Example::
 
@@ -146,17 +145,14 @@ class MdrsSdeCryptoAdapter(BaseModel):
         """Generate Long / Short / Flat signals using estimated SDE parameters.
 
         Computes the sigmoid regime probability from ``hybrid_z_score``
-        and delegates the downstream filtering pipeline (sticky / ADX /
-        QPB) to :func:`_regime_gates.assemble_signal` to guarantee
-        parity with the other regime-probability adapters (DL-regime,
-        HMM).
+        and delegates breakout signal assembly to
+        :func:`_regime_gates.assemble_signal` to guarantee parity with
+        the other regime-probability adapters (DL-regime, HMM, LGBM).
 
         Args:
             test_data: Out-of-sample ``DataFrame`` containing at minimum
-                ``hybrid_z_score``, ``Close``, ``ADX``,
-                ``dynamic_resistance``, ``dynamic_support``, and — when
-                QPB is enabled — ``past_vol_48b``, ``past_ret_48b``,
-                ``d_rv_90d_proxy``.
+                ``hybrid_z_score``, ``Close``, ``dynamic_resistance``,
+                and ``dynamic_support``.
             params: Posterior estimates dict from :meth:`fit`.
 
         Returns:

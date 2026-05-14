@@ -26,7 +26,8 @@ quant-research/
 ├── src/
 │   ├── backtesting/              Walk-forward backtesting framework
 │   │   ├── benchmarks/           BuyAndHoldBenchmark, StatisticalValidator
-│   │   ├── cli/                  qr-backtest, qr-buy-and-hold, qr-validate
+│   │   ├── cli/                  qr-backtest, qr-buy-and-hold, qr-validate,
+│   │   │                         qr-frozen-eval, qr-plot-reliability
 │   │   ├── core/                 Base classes and config loader
 │   │   ├── engines/              GenericBacktestEngine, WalkForwardRunner
 │   │   ├── models/
@@ -132,6 +133,8 @@ qr-validate --result results/mdrs_sde_btc_btcusdt_<timestamp>_trades.csv
 | `qr-backtest` | Run walk-forward backtest for any registered model |
 | `qr-buy-and-hold` | Compute passive buy-and-hold benchmark metrics |
 | `qr-validate` | Bootstrap CI, Permutation test, Subperiod analysis |
+| `qr-frozen-eval` | Fixed-parameter robustness study (no monthly refit) |
+| `qr-plot-reliability` | Figure 2 generation — reliability diagram for w(Z_t) |
 
 ## Registered Models
 

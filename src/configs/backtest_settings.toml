@@ -10,9 +10,9 @@
 only_selected_zone  = false
 
 [filters.qpb]
-# Trade-level post-processing mode. As of v2.0 only "event_rate" is
-# supported. See [filters.qpb.event_rate] for parameters. Omit this
-# section entirely to disable post-processing.
+# PAITS-Event pre-execution signal-gating mode. As of v2.0.1 only
+# "event_rate" is supported. See [filters.qpb.event_rate] for parameters.
+# Omit this section entirely to disable event-rate signal gating.
 mode = "event_rate"
 
 [filters.qpb.event_rate]

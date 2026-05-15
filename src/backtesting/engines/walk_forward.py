@@ -18,18 +18,21 @@ Given a ``start_date``, an ``end_date``, ``training_months``, and
 * Testing window  : ``[test_start, test_start + testing_months)``
 * Windows advance by one calendar month (``freq="MS"``).
 
-PAITS-Event post-processing
----------------------------
-When ``[filters.qpb].mode = "event_rate"`` is set, the aggregated
-trades are filtered by :class:`WalkForwardEventRateGate`. This applies
-a bar-level threshold on the rolling-max of OOS regime probability,
-with the threshold recomputed each month by bisection so that the
-cooldown-adjusted event rate matches ``target_events_per_month``. See
-``_event_rate.py`` for details.
+PAITS-Event pre-execution signal gate
+---------------------------------------
+When ``[filters.qpb].mode = "event_rate"`` is set,
+:class:`WalkForwardEventRateGate` is applied **before**
+``engine.run_backtest``. The gate computes admissible entry bars from
+the rolling-max of OOS regime probability, rewrites the test-window
+``signal`` / ``confidence`` columns to a sparse event-entry stream, and
+then lets the existing execution engine manage TP / SL / break-even /
+funding / costs.
 
-As of v2.0, ``"event_rate"`` is the only supported post-processing
-mode. The legacy ``"static"`` and ``"walkforward"`` modes were removed
-together with the underlying sticky / ADX / QPB filter chain.
+This is intentionally not a trade-level post-filter. Trade-level
+filtering is path-dependent and mismatches the engine's next-bar entry
+semantics. As of v2.0.1, ``"event_rate"`` is the only supported PAITS
+entry-control mode. The legacy ``"static"`` and ``"walkforward"`` modes
+remain removed together with sticky / ADX / QPB.
 """
 from __future__ import annotations
 
@@ -198,9 +201,15 @@ class WalkForwardRunner:
 
         Loads the pickle file produced by :meth:`fit_all`, calls
         ``get_fixed_params()`` and ``run_backtest()`` for every window
-        within the configured date range, aggregates trades, and
-        optionally applies WF-QPB post-processing if enabled via
-        ``[filters.qpb].mode = "walkforward"``.
+        within the configured date range, and aggregates trades.
+
+        In ``[filters.qpb].mode = "event_rate"`` mode, PAITS-Event is
+        applied as a pre-execution signal gate: the persisted OOS
+        ``regime_prob`` / ``direction_indicator`` columns are converted
+        into sparse ``signal`` / ``confidence`` entries before the
+        engine is called. ``model.predict`` is deliberately not invoked
+        in this mode, because doing so would rebuild raw breakout
+        signals and reintroduce the old post-filter failure mode.
 
         Args:
             signals_path: Path to the ``.pkl`` file produced by
@@ -232,6 +241,22 @@ class WalkForwardRunner:
 
         exec_params = self._engine.get_fixed_params()
 
+        qpb_cfg = self._filter_config.get("qpb", {}) or {}
+        mode = qpb_cfg.get("mode")
+        use_event_rate = mode == "event_rate"
+
+        if mode is not None and not use_event_rate:
+            logger.warning(
+                "Unsupported [filters.qpb].mode=%r in v2.0.1; "
+                "use \"event_rate\" or remove the section. Pass-through.",
+                mode,
+            )
+
+        event_mask = (
+            self._build_event_rate_mask(window_results)
+            if use_event_rate else None
+        )
+
         updated: list[WindowResult | None] = []
         for res in window_results:
             if res is None:
@@ -239,18 +264,36 @@ class WalkForwardRunner:
                 continue
             if not (wf_settings["start_date"] <= res.window_label <= wf_settings["end_date"]):
                 continue
-            # Re-generate signals with current filter settings (supports ablation).
-            # predict() re-applies sticky/ADX filters using self._model._filters
-            # which reflects CLI --no-sticky / --no-adx overrides.
-            try:
-                mean_params = res.params if isinstance(res.params, dict) else {}
-                signal_df   = self._model.predict(res.signal_df, mean_params)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "predict() failed for window %s: %s",
-                    res.window_label, exc,
-                )
-                signal_df = res.signal_df
+
+            if use_event_rate:
+                # PAITS-Event direct mode: do not call model.predict().
+                # The pickle already contains OOS regime_prob and
+                # direction_indicator for this test window. Rebuild only
+                # the executable signal stream before the engine sees it.
+                try:
+                    signal_df = self._apply_event_rate_to_signal_df(
+                        res.signal_df, event_mask
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "PAITS-Event signal gating failed for window %s: %s",
+                        res.window_label, exc,
+                    )
+                    signal_df = res.signal_df.copy()
+                    signal_df["signal"] = 0
+                    signal_df["confidence"] = 0.0
+            else:
+                # Default/backward-compatible mode: re-generate raw model
+                # signals with current settings.
+                try:
+                    mean_params = res.params if isinstance(res.params, dict) else {}
+                    signal_df   = self._model.predict(res.signal_df, mean_params)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "predict() failed for window %s: %s",
+                        res.window_label, exc,
+                    )
+                    signal_df = res.signal_df
 
             try:
                 trades = self._engine.run_backtest(signal_df, exec_params)
@@ -261,88 +304,25 @@ class WalkForwardRunner:
                 )
                 trades = pd.DataFrame()
             from dataclasses import replace
-            updated.append(replace(res, trades=trades))
+            updated.append(replace(res, trades=trades, signal_df=signal_df))
 
         all_trades, param_summary = self._aggregate(updated)
 
-        # Trade-level filter post-processing (PAITS-Event in v2.0+)
-        all_trades = self._apply_filter_postprocessing(all_trades, updated)
-
+        # No trade-level filter here. PAITS-Event must be applied before
+        # run_backtest because the engine is single-position and enters on
+        # the next bar. Post-filtering trades is path-dependent and causes
+        # timestamp mismatches (signal bar t vs entry bar t+1).
         return all_trades, param_summary
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _apply_filter_postprocessing(
-        self,
-        trades: pd.DataFrame,
-        window_results: list[WindowResult | None],
-        ) -> pd.DataFrame:
-        """Apply trade-level post-processing based on ``[filters.qpb].mode``.
-
-        As of v2.0, the only supported mode is ``"event_rate"``
-        (PAITS-Event); the legacy ``"static"`` and ``"walkforward"``
-        modes were removed together with the sticky / ADX / QPB
-        filter chain. Any other mode value (including the absence of
-        the config section) results in a no-op pass-through.
-
-        Args:
-            trades: Aggregated completed-trades DataFrame.
-            window_results: Per-window results carrying ``signal_df``.
-
-        Returns:
-            Filtered (or unchanged) trades DataFrame.
-        """
-        qpb_cfg = self._filter_config.get("qpb", {}) or {}
-        mode = qpb_cfg.get("mode")
-
-        if mode == "event_rate":
-            return self._apply_event_rate(trades, window_results)
-        if mode is not None and mode != "event_rate":
-            logger.warning(
-                "Unsupported [filters.qpb].mode=%r in v2.0; "
-                "use \"event_rate\" or remove the section. Pass-through.",
-                mode,
-            )
-
-        return trades
-
-    def _apply_event_rate(
-        self,
-        trades: pd.DataFrame,
-        window_results: list[WindowResult | None],
-        ) -> pd.DataFrame:
-        """Apply PAITS-Event walk-forward event-rate gating.
-
-        Active when ``[filters.qpb].mode = "event_rate"`` is set in the
-        config. Applies a bar-level rolling-max regime probability
-        threshold whose value is set by bisection over the previous
-        lookback window so that the cooldown-adjusted event rate
-        matches ``target_events_per_month``.
-
-        The event-rate gate is applied at the *bar* level (via
-        :meth:`WalkForwardEventRateGate.compute_mask`) and then
-        intersected with the existing aggregated trades by entry
-        timestamp. Because the bar-level mask already enforces cooldown
-        spacing, the downstream single-position engine sees a sparse
-        stream of admissible entries.
-
-        Args:
-            trades: Aggregated trades DataFrame from upstream windows.
-            window_results: Per-window results carrying ``signal_df``
-                with ``regime_prob`` and ``direction_indicator``.
-
-        Returns:
-            Filtered trades DataFrame containing only those whose entry
-            bars are admitted by the event-rate gate.
-        """
-        if trades.empty:
-            return trades
-
+    def _event_rate_config(self) -> WalkForwardEventRateConfig:
+        """Parse ``[filters.qpb.event_rate]`` into a config object."""
         qpb_cfg = self._filter_config.get("qpb", {}) or {}
         er_section = qpb_cfg.get("event_rate", {}) or {}
-        cfg = WalkForwardEventRateConfig(
+        return WalkForwardEventRateConfig(
             target_events_per_month=float(
                 er_section.get("target_events_per_month", 5.0)
             ),
@@ -356,21 +336,33 @@ class WalkForwardRunner:
             min_lookback_bars=int(er_section.get("min_lookback_bars", 100)),
         )
 
+    def _build_event_rate_mask(
+        self,
+        window_results: list[WindowResult | None],
+        ) -> pd.Series:
+        """Build the PAITS-Event admissible-bar mask over all OOS windows.
+
+        The returned index contains signal-bar timestamps. The engine will
+        consume the corresponding sparse ``signal`` values and enter at the
+        next bar according to its normal semantics.
+        """
+        cfg = self._event_rate_config()
+
         logger.info(
-            "PAITS-Event gate ACTIVE: target=%.1f/mo cooldown=%.2fd lookback=%dd",
+            "PAITS-Event pre-execution gate ACTIVE: "
+            "target=%.1f/mo cooldown=%.2fd lookback=%dd",
             cfg.target_events_per_month,
             cfg.cooldown_days,
             cfg.lookback_days,
         )
 
-        # Reconstruct full signal frame from window results
         signal_dfs = [
             r.signal_df for r in window_results
             if r is not None and not r.signal_df.empty
         ]
         if not signal_dfs:
             logger.warning("PAITS-Event disabled — no signal DataFrames available")
-            return trades
+            return pd.Series(dtype=bool)
 
         full_signal = pd.concat(signal_dfs).sort_index()
         full_signal = full_signal[~full_signal.index.duplicated(keep="first")]
@@ -378,34 +370,68 @@ class WalkForwardRunner:
         required_cols = {"regime_prob", "direction_indicator"}
         missing = required_cols - set(full_signal.columns)
         if missing:
-            logger.error(
-                "PAITS-Event disabled — signal frame missing columns: %s",
-                missing,
+            raise KeyError(
+                f"PAITS-Event requires signal columns {sorted(missing)}"
             )
-            return trades
 
         gate = WalkForwardEventRateGate(cfg)
-        mask = gate.compute_mask(full_signal)
-        admitted_timestamps = full_signal.index[mask]
-
-        if "entry_time" not in trades.columns:
-            logger.error(
-                "PAITS-Event disabled — trades frame lacks 'entry_time' column"
-            )
-            return trades
-
-        admitted_set = set(admitted_timestamps)
-        kept_mask = trades["entry_time"].isin(admitted_set)
-        filtered = trades[kept_mask].reset_index(drop=True)
-
+        mask = gate.compute_mask(full_signal).astype(bool)
+        n_events = int(mask.sum())
         logger.info(
-            "PAITS-Event: %d / %d trades admitted (%.1f%%)",
-            len(filtered),
-            len(trades),
-            100.0 * len(filtered) / max(len(trades), 1),
+            "PAITS-Event pre-execution events: %d / %d bars admitted (%.4f%%)",
+            n_events,
+            len(mask),
+            100.0 * n_events / max(len(mask), 1),
         )
+        return mask
 
-        return filtered
+    def _apply_event_rate_to_signal_df(
+        self,
+        signal_df: pd.DataFrame,
+        event_mask: pd.Series | None,
+        ) -> pd.DataFrame:
+        """Rewrite a test-window signal frame as sparse PAITS-Event entries.
+
+        ``signal`` and ``confidence`` are reset to flat everywhere. At
+        event-mask bars, ``signal`` is set from ``direction_indicator`` and
+        ``confidence`` from ``regime_prob``. No sticky / ADX / QPB chain and
+        no raw model breakout signal are consulted.
+        """
+        if event_mask is None or event_mask.empty:
+            out = signal_df.copy()
+            out["signal"] = 0
+            out["confidence"] = 0.0
+            return out
+
+        missing = {"regime_prob", "direction_indicator"} - set(signal_df.columns)
+        if missing:
+            raise KeyError(
+                f"PAITS-Event requires signal columns {sorted(missing)}"
+            )
+
+        out = signal_df.copy()
+        if "raw_signal_before_event_rate" not in out.columns and "signal" in out.columns:
+            out["raw_signal_before_event_rate"] = out["signal"]
+        if "raw_confidence_before_event_rate" not in out.columns and "confidence" in out.columns:
+            out["raw_confidence_before_event_rate"] = out["confidence"]
+
+        allowed = event_mask.reindex(out.index).fillna(False).astype(bool)
+
+        out["signal"] = 0
+        out["confidence"] = 0.0
+
+        direction = pd.to_numeric(
+            out.loc[allowed, "direction_indicator"], errors="coerce"
+        ).fillna(0).astype(int)
+        confidence = pd.to_numeric(
+            out.loc[allowed, "regime_prob"], errors="coerce"
+        ).fillna(0.0).clip(0.0, 1.0)
+
+        out.loc[allowed, "signal"] = direction
+        out.loc[allowed, "confidence"] = confidence
+        out["event_rate_allowed"] = allowed.astype(bool)
+
+        return out
 
     def _fit_window(
         self,

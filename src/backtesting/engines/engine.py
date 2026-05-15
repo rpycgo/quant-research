@@ -82,7 +82,7 @@ class GenericBacktestEngine(BaseEngine):
         Returns:
             ``DataFrame`` of completed trades. Empty if no trades were
             triggered. Contains: ``entry_time``, ``exit_time``, ``type``,
-            ``result``, ``PnL``, ``equity``, ``drawdown``.
+            ``result``, ``exit_reason``, ``outcome``, ``PnL``, ``equity``, ``drawdown``.
         """
         round_trip_cost = (
             self.execution_costs["commission_rate"]
@@ -121,6 +121,7 @@ class GenericBacktestEngine(BaseEngine):
                         "entry_time": nxt_time,
                         "tp_price": entry_price * (1.0 + dynamic_params["tp_long"]),
                         "sl_price": sl_price,
+                        "stop_state": "StopLoss",
                         "hwm": entry_price,
                         "tp_target": dynamic_params["tp_long"],
                         "sl_target": dynamic_params["sl_long"],
@@ -137,6 +138,7 @@ class GenericBacktestEngine(BaseEngine):
                         "entry_time": nxt_time,
                         "tp_price": entry_price * (1.0 - dynamic_params["tp_short"]),
                         "sl_price": sl_price,
+                        "stop_state": "StopLoss",
                         "lwm": entry_price,
                         "tp_target": dynamic_params["tp_short"],
                         "sl_target": dynamic_params["sl_short"],
@@ -202,23 +204,26 @@ class GenericBacktestEngine(BaseEngine):
 
             be_ratio = risk["break_even_trigger_ratio_long"]
             if float(nxt["High"]) >= entry * (1.0 + pos["tp_target"] * be_ratio):
-                pos["sl_price"] = max(pos["sl_price"], entry * 1.0005)
+                be_stop = entry * 1.0005
+                if be_stop > pos["sl_price"]:
+                    pos["sl_price"] = be_stop
+                    pos["stop_state"] = "BreakEven"
 
             if pos["hwm"] >= entry * (1.0 + pos["trail_start"]):
-                pos["sl_price"] = max(
-                    pos["sl_price"],
-                    pos["hwm"] * (1.0 - pos["sl_target"]),
-                )
+                trailing_stop = pos["hwm"] * (1.0 - pos["sl_target"])
+                if trailing_stop > pos["sl_price"]:
+                    pos["sl_price"] = trailing_stop
+                    pos["stop_state"] = "TrailingStop"
 
             if float(nxt["Low"]) <= pos["sl_price"]:
                 return self._trade_record(
                     (pos["sl_price"] - entry) / entry - cost,
-                    entry_time, nxt_time, "Long", "StopLoss",
+                    entry_time, nxt_time, "Long", pos.get("stop_state", "StopLoss"),
                 )
             if float(nxt["High"]) >= pos["tp_price"]:
                 return self._trade_record(
                     pos["tp_target"] - cost,
-                    entry_time, nxt_time, "Long", "Win",
+                    entry_time, nxt_time, "Long", "TakeProfit",
                 )
 
         elif pos_type == "Short":
@@ -226,23 +231,26 @@ class GenericBacktestEngine(BaseEngine):
 
             be_ratio = risk["break_even_trigger_ratio_short"]
             if float(nxt["Low"]) <= entry * (1.0 - pos["tp_target"] * be_ratio):
-                pos["sl_price"] = min(pos["sl_price"], entry * 0.9995)
+                be_stop = entry * 0.9995
+                if be_stop < pos["sl_price"]:
+                    pos["sl_price"] = be_stop
+                    pos["stop_state"] = "BreakEven"
 
             if pos["lwm"] <= entry * (1.0 - pos["trail_start"]):
-                pos["sl_price"] = min(
-                    pos["sl_price"],
-                    pos["lwm"] * (1.0 + pos["sl_target"]),
-                )
+                trailing_stop = pos["lwm"] * (1.0 + pos["sl_target"])
+                if trailing_stop < pos["sl_price"]:
+                    pos["sl_price"] = trailing_stop
+                    pos["stop_state"] = "TrailingStop"
 
             if float(nxt["High"]) >= pos["sl_price"]:
                 return self._trade_record(
                     (entry - pos["sl_price"]) / entry - cost,
-                    entry_time, nxt_time, "Short", "StopLoss",
+                    entry_time, nxt_time, "Short", pos.get("stop_state", "StopLoss"),
                 )
             if float(nxt["Low"]) <= pos["tp_price"]:
                 return self._trade_record(
                     pos["tp_target"] - cost,
-                    entry_time, nxt_time, "Short", "Win",
+                    entry_time, nxt_time, "Short", "TakeProfit",
                 )
 
         elapsed_hours = (nxt_time - entry_time).total_seconds() / 3600
@@ -264,8 +272,16 @@ class GenericBacktestEngine(BaseEngine):
         entry_time: pd.Timestamp,
         exit_time: pd.Timestamp,
         trade_type: str,
-        result: str,
+        exit_reason: str,
         ) -> dict[str, Any]:
+        """Create a completed-trade record with explicit exit labels.
+
+        ``exit_reason`` records the mechanical reason the engine closed
+        the position: ``TakeProfit``, ``StopLoss``, ``BreakEven``,
+        ``TrailingStop``, or ``TimeOut``. ``outcome`` is derived from
+        final net PnL after funding and execution costs, so a trailing
+        stop may still be a profitable outcome.
+        """
         funding_cost = 0.0
         if self._funding_mgr is not None and self._symbol is not None:
             funding_cost = self._funding_mgr.get_funding_cost(
@@ -275,12 +291,22 @@ class GenericBacktestEngine(BaseEngine):
                 position_type = trade_type,
             )
 
+        net_pnl = pnl - funding_cost
+        if net_pnl > 0:
+            outcome = "Win"
+        elif net_pnl < 0:
+            outcome = "Loss"
+        else:
+            outcome = "Flat"
+
         return {
-            "PnL":          pnl - funding_cost,
+            "PnL":          net_pnl,
             "entry_time":   entry_time,
             "exit_time":    exit_time,
             "type":         trade_type,
-            "result":       result,
+            "result":       exit_reason,
+            "exit_reason":  exit_reason,
+            "outcome":      outcome,
             "funding_cost": round(funding_cost, 8),
         }
 

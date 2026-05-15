@@ -64,7 +64,9 @@ class BaseEngine(ABC):
             * ``entry_time`` (``Timestamp``)
             * ``exit_time``  (``Timestamp``)
             * ``type``       (``str``)   – ``"Long"`` or ``"Short"``
-            * ``result``     (``str``)   – ``"Win"``, ``"StopLoss"``, or ``"TimeOut"``
+            * ``result``     (``str``)   – exit reason: ``"TakeProfit"``, ``"StopLoss"``, ``"BreakEven"``, ``"TrailingStop"``, or ``"TimeOut"``
+            * ``exit_reason`` (``str``)  – same as ``result`` for explicit downstream use
+            * ``outcome``    (``str``)   – ``"Win"``, ``"Loss"``, or ``"Flat"`` derived from net PnL
             * ``PnL``        (``float``) – net return after execution costs
             * ``equity``     (``float``) – cumulative equity curve
             * ``drawdown``   (``float``) – drawdown from running maximum

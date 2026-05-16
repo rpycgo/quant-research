@@ -30,8 +30,8 @@ funding / costs.
 
 This is intentionally not a trade-level post-filter. Trade-level
 filtering is path-dependent and mismatches the engine's next-bar entry
-semantics. As of v2.0.1, ``"event_rate"`` is the only supported PAITS
-entry-control mode. The legacy ``"static"`` and ``"walkforward"`` modes
+semantics. ``event_rate`` also exports a monthly threshold audit trail
+so threshold calibration is reproducible. The legacy ``"static"`` and ``"walkforward"`` modes
 remain removed together with sticky / ADX / QPB.
 """
 from __future__ import annotations
@@ -253,7 +253,7 @@ class WalkForwardRunner:
             )
 
         event_mask = (
-            self._build_event_rate_mask(window_results)
+            self._build_event_rate_mask(window_results, signals_path=signals_path)
             if use_event_rate else None
         )
 
@@ -335,10 +335,30 @@ class WalkForwardRunner:
             ),
             min_lookback_bars=int(er_section.get("min_lookback_bars", 100)),
         )
+    def _event_rate_audit_path(self, signals_path: Path | None) -> Path | None:
+        """Resolve the PAITS-Event threshold audit CSV path.
+
+        If ``[filters.qpb.event_rate].audit_output_path`` is provided,
+        that path is used. Otherwise, when ``signals_path`` is known, the
+        audit is written next to the signals pickle using the suffix
+        ``_event_rate_threshold_audit.csv``.
+        """
+        qpb_cfg = self._filter_config.get("qpb", {}) or {}
+        er_section = qpb_cfg.get("event_rate", {}) or {}
+        configured = er_section.get("audit_output_path")
+        if configured:
+            return Path(configured)
+        if signals_path is None:
+            return None
+        return signals_path.with_name(
+            f"{signals_path.stem}_event_rate_threshold_audit.csv"
+        )
+
 
     def _build_event_rate_mask(
         self,
         window_results: list[WindowResult | None],
+        signals_path: Path | None = None,
         ) -> pd.Series:
         """Build the PAITS-Event admissible-bar mask over all OOS windows.
 
@@ -383,6 +403,14 @@ class WalkForwardRunner:
             len(mask),
             100.0 * n_events / max(len(mask), 1),
         )
+
+        audit_df = gate.get_audit_frame()
+        audit_path = self._event_rate_audit_path(signals_path)
+        if audit_path is not None and not audit_df.empty:
+            audit_path.parent.mkdir(parents=True, exist_ok=True)
+            audit_df.to_csv(audit_path, index=False)
+            logger.info("PAITS-Event threshold audit saved → %s", audit_path)
+
         return mask
 
     def _apply_event_rate_to_signal_df(

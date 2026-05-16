@@ -298,8 +298,12 @@ class WalkForwardEventRateGate:
         plan = []  # list of _PlanEntry
         for i, refit_date in enumerate(refit_dates):
             lookback_start = refit_date - pd.Timedelta(days=self.config.lookback_days)
-            lb_score = score.loc[lookback_start:refit_date]
-            lb_dir = direction.loc[lookback_start:refit_date]
+            # Strictly prior lookback: threshold calibration may use only
+            # bars before the refit timestamp. This removes the inclusive
+            # boundary ambiguity around month-end refits.
+            lookback_mask = (score.index >= lookback_start) & (score.index < refit_date)
+            lb_score = score.loc[lookback_mask]
+            lb_dir = direction.loc[lookback_mask]
 
             # Align and drop NaN scores
             valid = lb_score.notna()

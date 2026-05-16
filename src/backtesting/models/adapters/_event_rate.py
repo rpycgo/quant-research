@@ -38,11 +38,24 @@ single-position engine handles overlap-free execution naturally.
 
 Warm-up
 -------
-When fewer than ``min_lookback_bars`` valid ``rp_max_window`` bars are
-available in the lookback window, the estimator falls back to the
-``fallback_threshold`` configured in ``[filters.qpb.event_rate]``. This
-preserves coverage for the earliest WFA windows where bisection would
-otherwise be unstable.
+PAITS-Event uses strict OOS warm-up by default. The first refit is
+scheduled only after ``lookback_days`` of OOS detector output has
+accumulated. Bars before the first refit remain flat because no strictly
+prior OOS history exists for target-event calibration.
+
+At later refits, if fewer than ``min_lookback_bars`` valid score bars
+are available because of missing data, the estimator falls back to the
+``fallback_threshold`` configured in ``[filters.qpb.event_rate]``. The
+fallback is therefore a missing-data safeguard, not an implicit early
+cold-start trader.
+
+Audit trail
+-----------
+Every refit writes an audit row containing the lookback window,
+selected threshold, event-count target, realized lookback event count,
+score distribution summary, cooldown settings, and fallback status. The
+runner can persist this audit frame for paper tables and reproducibility
+checks.
 
 Integration
 -----------
@@ -85,6 +98,30 @@ class EventRateThreshold:
     refit_date: pd.Timestamp
     n_lookback_bars: int
     used_fallback: bool
+
+
+@dataclass(frozen=True)
+class EventRateAuditRow:
+    """Audit information for one threshold refit."""
+    refit_date: pd.Timestamp
+    lookback_start: pd.Timestamp
+    lookback_end: pd.Timestamp
+    threshold: float
+    target_events_per_month: float
+    target_total_events: float
+    lookback_events_at_threshold: int
+    cooldown_days: float
+    cooldown_bars: int
+    score_window_bars: int
+    lookback_days: int
+    n_lookback_bars: int
+    used_fallback: bool
+    fallback_threshold: float
+    threshold_method: str
+    score_min: float
+    score_median: float
+    score_mean: float
+    score_max: float
 
 
 @dataclass
@@ -258,7 +295,7 @@ class _PlanEntry(NamedTuple):
 
 
 class WalkForwardEventRateGate:
-    """Bar-level walk-forward event-rate gate (PAITS-Event v1.20.0).
+    """Bar-level walk-forward event-rate gate.
 
     This gate is intended to be invoked in ``[filters.qpb].mode =
     "event_rate"`` mode. It produces a boolean mask over the input
@@ -275,6 +312,7 @@ class WalkForwardEventRateGate:
     def __init__(self, config=None):
         self.config = config or WalkForwardEventRateConfig()
         self._last_plan = None  # list of _PlanEntry, set by _build_plan
+        self._last_audit = pd.DataFrame()
 
     def _build_plan(self, signal_df):
         """Construct the (refit_date, threshold) plan over the full timeline."""
@@ -296,10 +334,16 @@ class WalkForwardEventRateGate:
         refit_dates = pd.date_range(first_refit, end, freq=self.config.refit_freq)
 
         plan = []  # list of _PlanEntry
+        audit_rows: list[EventRateAuditRow] = []
         for i, refit_date in enumerate(refit_dates):
             lookback_start = refit_date - pd.Timedelta(days=self.config.lookback_days)
-            lb_score = score.loc[lookback_start:refit_date]
-            lb_dir = direction.loc[lookback_start:refit_date]
+
+            # Strictly prior lookback: threshold calibration may use only
+            # bars before the refit timestamp. This removes the inclusive
+            # boundary ambiguity around month-end refits.
+            lookback_mask = (score.index >= lookback_start) & (score.index < refit_date)
+            lb_score = score.loc[lookback_mask]
+            lb_dir = direction.loc[lookback_mask]
 
             # Align and drop NaN scores
             valid = lb_score.notna()
@@ -309,6 +353,7 @@ class WalkForwardEventRateGate:
             if len(lb_score_v) < self.config.min_lookback_bars:
                 thr_val = self.config.fallback_threshold
                 used_fallback = True
+                threshold_method = "fallback"
             else:
                 thr_val = bisection_threshold(
                     lb_score_v, lb_dir_v,
@@ -317,6 +362,47 @@ class WalkForwardEventRateGate:
                     fallback=self.config.fallback_threshold,
                 )
                 used_fallback = False
+                threshold_method = "bisection"
+
+            lookback_events = count_events(
+                lb_score_v,
+                lb_dir_v,
+                thr_val,
+                self.config.cooldown_bars,
+            ) if len(lb_score_v) else 0
+
+            if len(lb_score_v):
+                score_min = float(np.nanmin(lb_score_v))
+                score_median = float(np.nanmedian(lb_score_v))
+                score_mean = float(np.nanmean(lb_score_v))
+                score_max = float(np.nanmax(lb_score_v))
+            else:
+                score_min = float("nan")
+                score_median = float("nan")
+                score_mean = float("nan")
+                score_max = float("nan")
+
+            audit_rows.append(EventRateAuditRow(
+                refit_date=refit_date,
+                lookback_start=lookback_start,
+                lookback_end=refit_date,
+                threshold=float(thr_val),
+                target_events_per_month=float(self.config.target_events_per_month),
+                target_total_events=float(self.config.target_total),
+                lookback_events_at_threshold=int(lookback_events),
+                cooldown_days=float(self.config.cooldown_days),
+                cooldown_bars=int(self.config.cooldown_bars),
+                score_window_bars=int(self.config.score_window_bars),
+                lookback_days=int(self.config.lookback_days),
+                n_lookback_bars=int(len(lb_score_v)),
+                used_fallback=bool(used_fallback),
+                fallback_threshold=float(self.config.fallback_threshold),
+                threshold_method=threshold_method,
+                score_min=score_min,
+                score_median=score_median,
+                score_mean=score_mean,
+                score_max=score_max,
+            ))
 
             test_end = (
                 refit_dates[i + 1] if i + 1 < len(refit_dates)
@@ -341,6 +427,7 @@ class WalkForwardEventRateGate:
             max(p.threshold.threshold for p in plan) if plan else 0.0,
         )
         self._last_plan = plan
+        self._last_audit = pd.DataFrame([row.__dict__ for row in audit_rows])
 
         return plan
 
@@ -393,3 +480,11 @@ class WalkForwardEventRateGate:
     def last_plan(self):
         """Return the most recently constructed plan (for inspection / logging)."""
         return self._last_plan
+
+    def get_audit_frame(self) -> pd.DataFrame:
+        """Return the most recent monthly threshold audit trail.
+
+        The returned frame is populated by :meth:`compute_mask` and is
+        empty before the first call. It is safe to write directly to CSV.
+        """
+        return self._last_audit.copy()

@@ -4,12 +4,11 @@ backtesting.models.adapters._regime_gates
 Shared signal-assembly helper for all regime-probability based adapters
 (MDRS-SDE, DL-regime, HMM, LGBM).
 
-As of v2.0, this module contains only the breakout signal-assembly
+As of v2.0, this module contains only the common breakout signal-assembly
 logic. The legacy ``compute_sticky_mask`` / ``compute_adx_mask`` /
-``compute_qpb_mask`` gates were removed because PAITS-Event
-(``[filters.qpb].mode = "event_rate"``) supersedes them at the trade
-post-processing layer; see ``_event_rate.py`` and
-``backtesting.engines.walk_forward``.
+``compute_qpb_mask`` gates were removed. Event-rate control is applied as a
+pre-execution signal gate by ``backtesting.engines.walk_forward`` when
+``[filters.qpb].mode = "event_rate"`` is enabled; see ``_event_rate.py``.
 
 Rule-based baseline adapters (simple_breakout, ma_crossover, rsi) are
 evaluated as self-contained technical rules and do not use this module.
@@ -28,8 +27,9 @@ added:
   ``Close > dynamic_resistance``; the short side is symmetric using
   ``dynamic_support``.
 
-Entry filtering is delegated to the trade-level post-processing layer
-(``WalkForwardRunner._apply_event_rate``).
+Event-rate entry control is delegated to the walk-forward runner before
+backtest execution. This helper intentionally emits only the raw breakout
+signal implied by ``regime_prob`` and support/resistance direction.
 """
 from __future__ import annotations
 
@@ -69,6 +69,11 @@ def assemble_signal(
     Returns:
         ``df`` with ``regime_prob``, ``confidence``, and ``signal``
         columns added or overwritten.
+
+    Notes:
+        ``filters_cfg`` and ``trade_cfg`` are intentionally ignored so every
+        regime-probability adapter receives identical raw breakout assembly.
+        Model-level sticky, ADX, and QPB gates must not be reintroduced here.
     """
     del filters_cfg, trade_cfg  # accepted for signature stability; intentionally unused
 

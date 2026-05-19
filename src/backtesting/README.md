@@ -19,10 +19,10 @@ backtesting/
 │   └── crypto/         CryptoLoader (Binance / local CSV) + CryptoPreprocessor
 ├── engines/            GenericBacktestEngine · WalkForwardRunner · PerformanceAnalyzer
 ├── models/
-│   ├── adapters/       mdrs_sde, dl_regime, hmm_regime, lgbm_regime
-│   │                   (share _regime_gates for breakout signal assembly);
-│   │                   _event_rate (PAITS-Event gate);
-│   │                   garch, simple_breakout, ma_crossover, rsi (pure rules)
+│   ├── adapters/       mdrs_sde, garch, dl_regime, hmm_regime, lgbm_regime
+│   │                   (share _regime_gates for raw breakout assembly);
+│   │                   _event_rate (pre-execution event-rate gate);
+│   │                   simple_breakout, ma_crossover, rsi (pure rules)
 │   └── registry.py     ModelRegistry with ModelEntry
 └── visualization/      PerformancePlotter (equity curve, drawdown, comparison)
 ```
@@ -32,8 +32,8 @@ backtesting/
 - **Model layer** owns all model-specific logic: signal generation, MCMC estimation. The engine sees only `signal` (1 / -1 / 0) and `confidence` (0–1).
 - **Engine layer** owns execution: TP / SL / trailing stop / time-out. It knows nothing about the model that generated the signals.
 - **Config layer** uses a 3-layer merge: package default → local override → shared infra.
-- **Regime-probability adapters** (`mdrs_sde`, `dl_regime`, `hmm_regime`, `lgbm_regime`) share a common breakout signal assembly via `_regime_gates.assemble_signal`: `signal = +1` when `regime_prob > entry_threshold` and `Close > dynamic_resistance`, `-1` for the short-symmetric case, else `0`. This guarantees fair comparison under identical execution conditions.
-- **PAITS-Event pre-execution signal gating** is applied by `WalkForwardRunner` before `engine.run_backtest()`. It thresholds `rolling_max(regime_prob, 12h)` with a threshold recomputed each month by bisection so that the cooldown-adjusted event rate matches a target rate. The gate rewrites `signal` and `confidence` on admitted event bars, leaving all other bars flat. See the *PAITS-Event gate* section below.
+- **Regime-probability adapters** (`mdrs_sde`, `garch`, `dl_regime`, `hmm_regime`, `lgbm_regime`) share a common raw breakout signal assembly via `_regime_gates.assemble_signal`: `signal = +1` when `regime_prob > entry_threshold` and `Close > dynamic_resistance`, `-1` for the short-symmetric case, else `0`. This guarantees fair comparison under identical execution conditions.
+- **PAITS-Event / event-rate control** is applied by `WalkForwardRunner` before backtest execution. It thresholds `rolling_max(regime_prob, 12h)` with a threshold recomputed each month by bisection so that the cooldown-adjusted event budget matches `target_events_per_month`, then rewrites `signal` only on admitted event bars. See the *PAITS-Event gate* section below.
 - **Rule-based adapters** (`simple_breakout`, `ma_crossover`, `rsi`) are evaluated as self-contained technical trading rules and do not share the regime-probability pipeline.
 - **ModelEntry** metadata flags control pipeline branching per model:
   - `requires_event_tagging` — whether DatasetBuilder pipeline is needed (MDRS-SDE only)
@@ -52,7 +52,7 @@ backtesting/
 
 | Model key | Asset | Adapter | Pipeline | Notes |
 |---|---|---|---|---|
-| `garch_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `GarchCryptoAdapter` | pure rule | GARCH(1,1), fixed TP/SL |
+| `garch_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `GarchCryptoAdapter` | breakout + PAITS-Event | GARCH(1,1) volatility mapped to regime probability |
 | `simple_breakout_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `SimpleBreakoutAdapter` | pure rule | 288-period rolling high/low |
 | `ma_crossover_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `MACrossoverAdapter` | pure rule | EMA(12)/EMA(26) |
 | `rsi_{btc,eth,sol,xrp}` | BTC/ETH/SOL/XRP | `RSIAdapter` | pure rule | RSI(14), 30/70 thresholds |
@@ -85,24 +85,16 @@ qr-backtest --list-models
 
 ### PAITS-Event gate
 
-PAITS-Event is a **pre-execution signal gate** that controls entry
-density for regime-probability adapters. It computes
+PAITS-Event is the pre-execution event-rate gate that controls
+entry density. It computes
 `score_t = rolling_max(regime_prob, score_window_bars)`, then at each
-`refit_freq` boundary uses the previous `lookback_days` of OOS scores
-to solve, by bisection, for the threshold that produces the target
-number of cooldown-respecting events.
-
-The bisection step solves only for the **event threshold**.
-`cooldown_days` is a fixed event de-duplication parameter used inside
-the event-count calculation; it is not optimized by bisection.
-
-In `event_rate` mode, `WalkForwardRunner` uses the saved OOS
-`regime_prob` and `direction_indicator` from `WindowResult.signal_df`
-directly. It does not call `model.predict()` again. For admitted event
-bars, the runner sets `signal = direction_indicator` and assigns
-`confidence`; all non-event bars are set flat before calling
-`engine.run_backtest()`. This avoids the path-dependent error of
-filtering completed trades after raw backtest execution.
+`refit_freq` boundary bisects over the previous `lookback_days` of
+scores to find the threshold giving approximately the configured event
+budget, subject to directional availability and cooldown constraints. No
+threshold grid is hardcoded; the
+bracket `[score_min, score_max]` is data-driven, so the gate
+transfers across assets without retuning absolute `regime_prob`
+values.
 
 Enable by setting `[filters.qpb].mode = "event_rate"` (this is the
 default in `configs/backtest_settings.toml`) and configuring
@@ -111,51 +103,16 @@ default in `configs/backtest_settings.toml`) and configuring
 ```toml
 [filters.qpb.event_rate]
 target_events_per_month = 5.0       # primary tuning hyperparameter
-cooldown_days           = 5.0       # 1 trading week; fixed de-duplication interval
+cooldown_days           = 5.0       # 1 trading week
 lookback_days           = 90        # = Bayesian detector training window
 score_window_bars       = 144       # 12h rolling max
 refit_freq              = "ME"      # month-end
-fallback_threshold      = 0.45      # missing-data safeguard after warm-up
+fallback_threshold      = 0.45      # warm-up fallback
 min_lookback_bars       = 100
-# Optional: if omitted, saved next to the signals pickle
-# audit_output_path      = "results/event_rate_threshold_audit.csv"
 ```
 
-To disable event-rate signal gating entirely, omit `[filters.qpb]`
-from the config file.
-
-#### Strict OOS warm-up
-
-PAITS-Event uses a strict OOS warm-up by default. Because each monthly
-threshold is calibrated from the previous `lookback_days` of already
-realized OOS detector scores, the system remains flat during the
-initial lookback window. With the default `lookback_days = 90`, a
-signal file beginning on `2020-04-01` will generally begin active
-event-rate trading around `2020-07-01`.
-
-The fallback threshold is not an automatic early cold-start trader. It
-is used only when a later refit has insufficient valid score bars due
-to missing data.
-
-#### Threshold audit trail
-
-Each event-rate run exports a monthly threshold audit CSV. If
-`audit_output_path` is not configured, the file is saved next to the
-signals pickle as:
-
-```text
-<signals_stem>_event_rate_threshold_audit.csv
-```
-
-The audit table records `refit_date`, `lookback_start`, `lookback_end`,
-selected `threshold`, target and realized lookback event counts,
-`cooldown_days`, `score_window_bars`, fallback usage, and score
-distribution summaries. Use this file to verify that each threshold is
-calibrated from the strictly prior lookback window:
-
-```text
-[refit_date - lookback_days, refit_date)
-```
+To disable event-rate gating entirely, omit `[filters.qpb]` from the
+config file.
 
 ### Two-phase backtest (fit once, backtest many times)
 
@@ -277,7 +234,7 @@ configs/
 only_selected_zone = false
 
 [filters.qpb]
-mode = "event_rate"   # PAITS-Event pre-execution signal gate
+mode = "event_rate"
 
 [filters.qpb.event_rate]
 target_events_per_month = 5.0
@@ -287,7 +244,6 @@ score_window_bars       = 144
 refit_freq              = "ME"
 fallback_threshold      = 0.45
 min_lookback_bars       = 100
-# audit_output_path      = "results/event_rate_threshold_audit.csv"
 ```
 
 The `[filters.qpb.event_rate]` settings apply only to

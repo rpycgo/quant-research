@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from backtesting.core.base_model import BaseModel
+from backtesting.models.adapters._regime_gates import assemble_signal
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,10 @@ class GarchCryptoAdapter(BaseModel):
         model_config: Merged config dict from
             ``BacktestConfigLoader.get_model_config("garch_*")``.
             Expected sections: ``[garch_settings]``, ``[regime_signal]``.
-        backtest_config: Parsed ``[risk_management]`` and ``[filters]``
-            sections used for entry-threshold and filter settings.
+        backtest_config: Parsed ``[risk_management]`` settings used for
+            entry-threshold configuration. The ``[filters]`` section is
+            retained for constructor parity with other adapters but is not
+            used for signal-level gating.
 
     Example::
 
@@ -181,14 +184,19 @@ class GarchCryptoAdapter(BaseModel):
         2. Compute a per-bar Z-score using ``(Close - Open) / (Open × GARCH_Vol)``.
         3. Map Z-score to sigmoid regime probability using calibrated
            ``k_avg`` / ``gamma_avg`` constants.
-        4. Apply sticky-breakout filter.
-        5. Determine Long / Short direction from Donchian-channel S/R.
-        6. Apply ADX gate.
+        4. Delegate breakout direction assembly to
+           :func:`_regime_gates.assemble_signal`, exactly like the MDRS-SDE,
+           HMM, LGBM, and DL-regime adapters.
+
+        No sticky, ADX, or QPB filter is applied inside the GARCH adapter.
+        Any MDRS-Event / event-rate gating must be applied upstream of
+        execution by the walk-forward runner so all regime-probability
+        adapters share the same logic.
 
         Args:
             test_data: Out-of-sample ``DataFrame`` containing ``Open``,
-                ``Close``, ``High``, ``Low``, ``ADX``,
-                ``dynamic_resistance``, ``dynamic_support``.
+                ``Close``, ``High``, ``Low``, ``dynamic_resistance``,
+                ``dynamic_support``.
             params: Dict returned by :meth:`fit`.  Must contain
                 ``arch_result`` and ``internal_scale``.
 
@@ -228,35 +236,15 @@ class GarchCryptoAdapter(BaseModel):
         df["regime_prob"] = 1.0 / (
             1.0 + np.exp(-self._k_avg * (z_score.abs() - self._gamma_avg))
         )
-        df["confidence"] = df["regime_prob"]
+        regime_prob = df["regime_prob"]
 
-        # Step 4 — sticky filter
-        entry_threshold = self._risk.get("entry_probability_threshold", 0.5)
-        min_duration = self._risk.get("minimum_signal_duration", 5)
-        use_sticky = self._filters.get("use_sticky", True)
-        use_adx = self._filters.get("use_adx", True)
-        adx_threshold = 30
-
-        binary_entry = (df["regime_prob"] > entry_threshold).astype(int)
-        if use_sticky:
-            sticky = (
-                binary_entry.rolling(window=min_duration).sum() == min_duration
-            ).astype(int)
-        else:
-            sticky = binary_entry
-
-        # Step 5 & 6 — direction + ADX gate
-        long_cond = df["Close"] > df["dynamic_resistance"]
-        short_cond = df["Close"] < df["dynamic_support"]
-        adx_pass = (df["ADX"] > adx_threshold) if use_adx else pd.Series(
-            True, index=df.index
+        return assemble_signal(
+            df,
+            regime_prob=regime_prob,
+            risk_cfg=self._risk,
+            filters_cfg=self._filters,
+            trade_cfg={},
         )
-
-        df["signal"] = 0
-        df.loc[sticky.astype(bool) & long_cond & adx_pass, "signal"] = 1
-        df.loc[sticky.astype(bool) & short_cond & adx_pass, "signal"] = -1
-
-        return df
 
     # ------------------------------------------------------------------
     # Private helpers
